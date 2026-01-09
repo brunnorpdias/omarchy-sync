@@ -6,7 +6,14 @@ get_safe_drives() {
     local root_dev
     root_dev=$(findmnt -n -o SOURCE / | sed 's/\[.*\]//')
 
-    lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL -p -n -r 2>/dev/null | while read -r name size fstype mountpoint label; do
+    # Use mapfile to avoid subshell variable loss
+    local lines=()
+    mapfile -t lines < <(lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL -p -n -r 2>/dev/null)
+
+    for line in "${lines[@]}"; do
+        # Split with read for space-delimited lsblk output
+        read -r name size fstype mountpoint label <<< "$line"
+
         # Skip if empty name or not a partition
         [[ -z "$name" ]] && continue
         [[ ! "$name" =~ [0-9]$ ]] && continue # Skip whole disks, only partitions
@@ -49,17 +56,14 @@ display_available_drives() {
     echo ""
     log "Available drives for backup:"
     local i=1
-    echo "$drives" | while IFS='|' read -r name size fstype mountpoint label status; do
+    # Use here-string to avoid subshell variable loss
+    while IFS='|' read -r name size fstype mountpoint label status; do
         local display_label="${label:-unnamed}"
-        local mount_info=""
-        if [[ "$status" == "mounted" ]]; then
-            mount_info="[mounted at $mountpoint]"
-        else
-            mount_info="[not mounted]"
-        fi
+        local mount_info="[not mounted]"
+        [[ "$status" == "mounted" ]] && mount_info="[mounted at $mountpoint]"
         echo "    $i. $display_label ($size, $fstype) - $name $mount_info"
-        ((i++))
-    done
+        i=$((i + 1))  # Avoid ((i++)) which returns 1 when i=0 with set -e
+    done <<< "$drives"
     echo ""
     return 0
 }
@@ -101,14 +105,21 @@ mount_drive() {
     fi
 
     log "Mounting $device..."
-    udisksctl mount -b "$device" --no-user-interaction 2>/dev/null | grep -oP "at \K.*" || {
+    local mountpoint
+    mountpoint=$(udisksctl mount -b "$device" --no-user-interaction 2>/dev/null | grep -oP "at \K.*") || {
         error "Failed to mount $device"
         return 1
     }
+
+    # Register for cleanup in case of unexpected exit
+    register_mount "$device"
+    echo "$mountpoint"
 }
 
 unmount_drive() {
     local device="$1"
     log "Unmounting $device..."
     udisksctl unmount -b "$device" --no-user-interaction 2>/dev/null || true
+    # Unregister from cleanup tracking
+    unregister_mount "$device"
 }

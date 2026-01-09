@@ -32,18 +32,34 @@ get_config_value() {
         echo "$default"
         return
     fi
+
+    # Escape regex metacharacters in key
+    local escaped_key
+    escaped_key=$(printf '%s' "$key" | sed 's/[.[\*^$()+?{|\\]/\\&/g')
+
     local value
-    value=$(grep -E "^$key\s*=" "$CONFIG_FILE" | head -1 | sed 's/^[^=]*=\s*//' | tr -d '"' | tr -d "'" | xargs)
+    value=$(grep -E "^${escaped_key}\s*=" "$CONFIG_FILE" | head -1 | \
+            sed 's/^[^=]*=\s*//' | \
+            sed 's/^"\(.*\)"$/\1/' | \
+            sed "s/^'\(.*\)'$/\1/" | \
+            sed 's/#.*//' | \
+            xargs)
     echo "${value:-$default}"
 }
 
 set_config_value() {
     local key="$1"
     local value="$2"
+
+    # Escape special characters for sed
+    local escaped_key escaped_value
+    escaped_key=$(printf '%s' "$key" | sed 's/[&/\]/\\&/g')
+    escaped_value=$(printf '%s' "$value" | sed 's/[&/\]/\\&/g')
+
     if grep -qE "^$key\s*=" "$CONFIG_FILE"; then
-        sed -i "s|^$key\s*=.*|$key = \"$value\"|" "$CONFIG_FILE"
+        sed -i "s|^${escaped_key}\s*=.*|$key = \"$escaped_value\"|" "$CONFIG_FILE"
     else
-        echo "$key = \"$value\"" >>"$CONFIG_FILE"
+        echo "$key = \"$value\"" >> "$CONFIG_FILE"
     fi
 }
 

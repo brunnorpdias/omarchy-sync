@@ -115,8 +115,8 @@ backup_command() {
         done < <(echo "$internal_drives")
     fi
 
-    # 3. Push to remote (prompt, default N)
-    if [[ -n "$remote_url" ]] && [[ -d "$local_path/.git" ]]; then
+    # 3. Push to remote (skip if --no-prompt)
+    if [[ "${NO_PROMPT:-false}" != true ]] && [[ -n "$remote_url" ]] && [[ -d "$local_path/.git" ]]; then
         echo ""
         local push_confirm
         push_confirm=$(prompt "Push to cloud ($remote_url)? (y/N): " "n")
@@ -127,30 +127,32 @@ backup_command() {
         fi
     fi
 
-    # 4. External drive (prompt, default N)
-    echo ""
-    local drive_confirm
-    drive_confirm=$(prompt "Backup to external drive? (y/N): " "n")
-    if [[ "$drive_confirm" =~ ^[yY]$ ]]; then
-        if display_available_drives; then
-            local selected
-            selected=$(select_drive)
-            if [[ -n "$selected" ]]; then
-                IFS='|' read -r device size fstype mountpoint label status <<<"$selected"
+    # 4. External drive (skip if --no-prompt)
+    if [[ "${NO_PROMPT:-false}" != true ]]; then
+        echo ""
+        local drive_confirm
+        drive_confirm=$(prompt "Backup to external drive? (y/N): " "n")
+        if [[ "$drive_confirm" =~ ^[yY]$ ]]; then
+            if display_available_drives; then
+                local selected
+                selected=$(select_drive)
+                if [[ -n "$selected" ]]; then
+                    IFS='|' read -r device size fstype mountpoint label status <<<"$selected"
 
-                local was_mounted=true
-                if [[ "$status" != "mounted" ]]; then
-                    was_mounted=false
-                    mountpoint=$(mount_drive "$device")
-                fi
+                    local was_mounted=true
+                    if [[ "$status" != "mounted" ]]; then
+                        was_mounted=false
+                        mountpoint=$(mount_drive "$device")
+                    fi
 
-                if [[ -n "$mountpoint" ]]; then
-                    local drive_target="$mountpoint/omarchy-backup"
-                    log "Backing up to $drive_target..."
-                    do_backup_to_target "$drive_target"
+                    if [[ -n "$mountpoint" ]]; then
+                        local drive_target="$mountpoint/omarchy-backup"
+                        log "Backing up to $drive_target..."
+                        do_backup_to_target "$drive_target"
 
-                    if [[ "$was_mounted" == false ]]; then
-                        unmount_drive "$device"
+                        if [[ "$was_mounted" == false ]]; then
+                            unmount_drive "$device"
+                        fi
                     fi
                 fi
             fi

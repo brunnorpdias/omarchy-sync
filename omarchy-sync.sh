@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 # Determine script location for sourcing modules
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,9 +11,13 @@ CONFIG_DIR="$HOME/.config/omarchy-sync"
 CONFIG_FILE="$CONFIG_DIR/config.toml"
 DEFAULT_LOCAL_PATH="$HOME/.local/share/omarchy-sync/backup"
 
-# --- Pre-parse --test flag (must happen before sourcing modules) ---
+# --- Pre-parse flags (must happen before sourcing modules) ---
 TEST_MODE=false
 TEST_DIR=""
+LOG_FLAG=false
+LOG_PATH=""
+NO_PROMPT=false
+export NO_PROMPT
 REMAINING_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -29,6 +33,20 @@ while [[ $# -gt 0 ]]; do
             fi
             shift
             ;;
+        --log)
+            LOG_FLAG=true
+            # Check if next arg is a path (not another flag)
+            if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then
+                LOG_PATH="$2"
+                shift
+            fi
+            shift
+            ;;
+        --no-prompt)
+            NO_PROMPT=true
+            export NO_PROMPT
+            shift
+            ;;
         *)
             REMAINING_ARGS+=("$1")
             shift
@@ -37,7 +55,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Set back the remaining args
-set -- "${REMAINING_ARGS[@]}"
+set -- "${REMAINING_ARGS[@]:-}"
 
 # Apply test mode if enabled
 if [[ "$TEST_MODE" == true ]]; then
@@ -69,6 +87,14 @@ source "$SCRIPT_DIR/lib/backup.sh"
 source "$SCRIPT_DIR/lib/restore.sh"
 source "$SCRIPT_DIR/lib/init.sh"
 
+# --- Set up trap for cleanup ---
+trap cleanup EXIT
+
+# --- Initialize logging if requested ---
+if [[ "$LOG_FLAG" == true ]]; then
+    init_logging "${LOG_PATH:-}"
+fi
+
 # --- Install Command ---
 install_command() {
     local install_dir="$HOME/.local/bin"
@@ -92,9 +118,13 @@ install_command() {
         echo 'CONFIG_FILE="$CONFIG_DIR/config.toml"'
         echo 'DEFAULT_LOCAL_PATH="$HOME/.local/share/omarchy-sync/backup"'
         echo ''
-        echo '# --- Pre-parse --test flag ---'
+        echo '# --- Pre-parse flags ---'
         echo 'TEST_MODE=false'
         echo 'TEST_DIR=""'
+        echo 'LOG_FLAG=false'
+        echo 'LOG_PATH=""'
+        echo 'NO_PROMPT=false'
+        echo 'export NO_PROMPT'
         echo 'REMAINING_ARGS=()'
         echo ''
         echo 'while [[ $# -gt 0 ]]; do'
@@ -109,6 +139,19 @@ install_command() {
         echo '            fi'
         echo '            shift'
         echo '            ;;'
+        echo '        --log)'
+        echo '            LOG_FLAG=true'
+        echo '            if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then'
+        echo '                LOG_PATH="$2"'
+        echo '                shift'
+        echo '            fi'
+        echo '            shift'
+        echo '            ;;'
+        echo '        --no-prompt)'
+        echo '            NO_PROMPT=true'
+        echo '            export NO_PROMPT'
+        echo '            shift'
+        echo '            ;;'
         echo '        *)'
         echo '            REMAINING_ARGS+=("$1")'
         echo '            shift'
@@ -116,7 +159,7 @@ install_command() {
         echo '    esac'
         echo 'done'
         echo ''
-        echo 'set -- "${REMAINING_ARGS[@]}"'
+        echo 'set -- "${REMAINING_ARGS[@]:-}"'
         echo ''
         echo 'if [[ "$TEST_MODE" == true ]]; then'
         echo '    echo "=== TEST MODE: Using HOME=$TEST_DIR ==="'
@@ -145,6 +188,12 @@ install_command() {
 
         echo ""
         echo "# --- Main ---"
+        echo 'trap cleanup EXIT'
+        echo ''
+        echo 'if [[ "$LOG_FLAG" == true ]]; then'
+        echo '    init_logging "${LOG_PATH:-}"'
+        echo 'fi'
+        echo ''
         echo 'check_dependencies'
         echo ''
         echo 'case "${1:-}" in'
@@ -161,8 +210,12 @@ install_command() {
         echo 'Usage: omarchy-sync [OPTIONS] <command>'
         echo ''
         echo 'Options:'
-        echo '  --test [DIR]  Run in test mode with isolated environment'
-        echo '                Default: ~/.local/share/omarchy-sync/test-env'
+        echo '  --test [DIR]    Run in test mode with isolated environment'
+        echo '                  Default: ~/.local/share/omarchy-sync/test-env'
+        echo '  --log [FILE]    Enable logging to file'
+        echo '                  Default: ~/.local/share/omarchy-sync/omarchy-sync.log'
+        echo '  --no-prompt     Run without interactive prompts (for cron/scripts)'
+        echo '                  Only backs up to local + configured internal drives'
         echo ''
         echo 'Commands:'
         echo '  --init      First-time setup or clone from existing remote'
@@ -178,7 +231,8 @@ install_command() {
         echo '  omarchy-sync --backup               # Create backup'
         echo '  omarchy-sync --restore              # Restore from backup'
         echo '  omarchy-sync --test --init          # Test in isolated env'
-        echo '  omarchy-sync --test /tmp/test --backup'
+        echo '  omarchy-sync --log --backup         # Backup with logging'
+        echo '  omarchy-sync --no-prompt --backup   # Backup without prompts (cron)'
         echo 'EOF'
         echo '    ;;'
         echo 'esac'
@@ -234,8 +288,12 @@ omarchy-sync v$VERSION - Arch Linux system backup & restore
 Usage: omarchy-sync [OPTIONS] <command>
 
 Options:
-  --test [DIR]  Run in test mode with isolated environment
-                Default: ~/.local/share/omarchy-sync/test-env
+  --test [DIR]    Run in test mode with isolated environment
+                  Default: ~/.local/share/omarchy-sync/test-env
+  --log [FILE]    Enable logging to file
+                  Default: ~/.local/share/omarchy-sync/omarchy-sync.log
+  --no-prompt     Run without interactive prompts (for cron/scripts)
+                  Only backs up to local + configured internal drives
 
 Commands:
   --init      First-time setup or clone from existing remote
@@ -252,7 +310,8 @@ Examples:
   omarchy-sync --backup               # Create backup
   omarchy-sync --restore              # Restore from backup
   omarchy-sync --test --init          # Test in isolated env
-  omarchy-sync --test /tmp/test --backup
+  omarchy-sync --log --backup         # Backup with logging
+  omarchy-sync --no-prompt --backup   # Backup without prompts (cron)
 EOF
     ;;
 esac
