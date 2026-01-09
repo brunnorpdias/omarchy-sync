@@ -1,309 +1,258 @@
 #!/bin/bash
 set -euo pipefail
 
-VERSION="1.0.0"
-INSTALL_PATH="$HOME/.local/bin/omarchy-sync"
-DEFAULT_TARGET="$HOME/.omarchy-backup"
-SIZE_LIMIT_MB=20
+VERSION="1.1.0"
 
-# Test mode: override HOME with TEST_HOME environment variable
-# Usage: TEST_HOME=/tmp/test-home omarchy-sync --backup /tmp/test-backup
-if [[ -n "${TEST_HOME:-}" ]]; then
-  echo "=== TEST MODE: Using HOME=$TEST_HOME ==="
-  HOME="$TEST_HOME"
-  DEFAULT_TARGET="$TEST_HOME/.omarchy-backup"
+# Determine script location for sourcing modules
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Default paths (may be overridden by --test flag)
+CONFIG_DIR="$HOME/.config/omarchy-sync"
+CONFIG_FILE="$CONFIG_DIR/config.toml"
+DEFAULT_LOCAL_PATH="$HOME/.local/share/omarchy-sync/backup"
+
+# --- Pre-parse --test flag (must happen before sourcing modules) ---
+TEST_MODE=false
+TEST_DIR=""
+REMAINING_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --test)
+            TEST_MODE=true
+            # Check if next arg is a directory (not another flag)
+            if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then
+                TEST_DIR="$2"
+                shift
+            else
+                TEST_DIR="$HOME/.local/share/omarchy-sync/test-env"
+            fi
+            shift
+            ;;
+        *)
+            REMAINING_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Set back the remaining args
+set -- "${REMAINING_ARGS[@]}"
+
+# Apply test mode if enabled
+if [[ "$TEST_MODE" == true ]]; then
+    echo "=== TEST MODE: Using HOME=$TEST_DIR ==="
+
+    # Create test environment structure if it doesn't exist
+    if [[ ! -d "$TEST_DIR/.config" ]]; then
+        echo "[*] Creating test environment..."
+        mkdir -p "$TEST_DIR/.config/test-app"
+        mkdir -p "$TEST_DIR/.local/share/applications"
+        mkdir -p "$TEST_DIR/.local/bin"
+        echo "test config" > "$TEST_DIR/.config/test-app/config.txt"
+        echo "[Desktop Entry]" > "$TEST_DIR/.local/share/applications/test.desktop"
+        echo '#!/bin/bash' > "$TEST_DIR/.local/bin/test-script"
+    fi
+
+    HOME="$TEST_DIR"
+    CONFIG_DIR="$HOME/.config/omarchy-sync"
+    CONFIG_FILE="$CONFIG_DIR/config.toml"
+    DEFAULT_LOCAL_PATH="$HOME/.local/share/omarchy-sync/backup"
 fi
 
-# --- Helpers ---
+# --- Source modules ---
+source "$SCRIPT_DIR/lib/helpers.sh"
+source "$SCRIPT_DIR/lib/config.sh"
+source "$SCRIPT_DIR/lib/metadata.sh"
+source "$SCRIPT_DIR/lib/drives.sh"
+source "$SCRIPT_DIR/lib/backup.sh"
+source "$SCRIPT_DIR/lib/restore.sh"
+source "$SCRIPT_DIR/lib/init.sh"
 
-log() { echo "[*] $1"; }
-error() { echo "[ERROR] $1" >&2; }
-done_() { echo "[DONE] $1"; }
-
-get_target() {
-  local flag_target="${1:-}"
-  if [[ -n "$flag_target" ]]; then
-    echo "$flag_target"
-  else
-    echo "$DEFAULT_TARGET"
-  fi
-}
-
+# --- Install Command ---
 install_command() {
-  mkdir -p "$(dirname "$INSTALL_PATH")"
-  cp "$0" "$INSTALL_PATH"
-  chmod +x "$INSTALL_PATH"
-  echo "Installed to $INSTALL_PATH"
-  echo "Add to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\""
-}
+    local install_dir="$HOME/.local/bin"
+    local install_path="$install_dir/omarchy-sync"
 
-check_dependencies() {
-  local missing=()
-  for cmd in rsync pacman git find; do
-    command -v "$cmd" &>/dev/null || missing+=("$cmd")
-  done
-  if [[ ${#missing[@]} -gt 0 ]]; then
-    error "Missing required commands: ${missing[*]}"
-    exit 1
-  fi
-}
+    mkdir -p "$install_dir"
 
-# --- Core Functions ---
+    log "Building single-file distribution..."
 
-capture_system() {
-  local target
-  target=$(get_target "$1")
+    # Concatenate all modules into one file
+    {
+        echo '#!/bin/bash'
+        echo "# omarchy-sync v$VERSION - installed $(date -Iseconds)"
+        echo '# Single-file distribution - do not edit, regenerate with --install'
+        echo 'set -euo pipefail'
+        echo ''
+        echo "VERSION=\"$VERSION\""
+        echo ''
+        echo '# Default paths (may be overridden by --test flag)'
+        echo 'CONFIG_DIR="$HOME/.config/omarchy-sync"'
+        echo 'CONFIG_FILE="$CONFIG_DIR/config.toml"'
+        echo 'DEFAULT_LOCAL_PATH="$HOME/.local/share/omarchy-sync/backup"'
+        echo ''
+        echo '# --- Pre-parse --test flag ---'
+        echo 'TEST_MODE=false'
+        echo 'TEST_DIR=""'
+        echo 'REMAINING_ARGS=()'
+        echo ''
+        echo 'while [[ $# -gt 0 ]]; do'
+        echo '    case "$1" in'
+        echo '        --test)'
+        echo '            TEST_MODE=true'
+        echo '            if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then'
+        echo '                TEST_DIR="$2"'
+        echo '                shift'
+        echo '            else'
+        echo '                TEST_DIR="$HOME/.local/share/omarchy-sync/test-env"'
+        echo '            fi'
+        echo '            shift'
+        echo '            ;;'
+        echo '        *)'
+        echo '            REMAINING_ARGS+=("$1")'
+        echo '            shift'
+        echo '            ;;'
+        echo '    esac'
+        echo 'done'
+        echo ''
+        echo 'set -- "${REMAINING_ARGS[@]}"'
+        echo ''
+        echo 'if [[ "$TEST_MODE" == true ]]; then'
+        echo '    echo "=== TEST MODE: Using HOME=$TEST_DIR ==="'
+        echo '    if [[ ! -d "$TEST_DIR/.config" ]]; then'
+        echo '        echo "[*] Creating test environment..."'
+        echo '        mkdir -p "$TEST_DIR/.config/test-app"'
+        echo '        mkdir -p "$TEST_DIR/.local/share/applications"'
+        echo '        mkdir -p "$TEST_DIR/.local/bin"'
+        echo '        echo "test config" > "$TEST_DIR/.config/test-app/config.txt"'
+        echo '        echo "[Desktop Entry]" > "$TEST_DIR/.local/share/applications/test.desktop"'
+        echo '        echo '"'"'#!/bin/bash'"'"' > "$TEST_DIR/.local/bin/test-script"'
+        echo '    fi'
+        echo '    HOME="$TEST_DIR"'
+        echo '    CONFIG_DIR="$HOME/.config/omarchy-sync"'
+        echo '    CONFIG_FILE="$CONFIG_DIR/config.toml"'
+        echo '    DEFAULT_LOCAL_PATH="$HOME/.local/share/omarchy-sync/backup"'
+        echo 'fi'
+        echo ''
 
-  echo "--- Omarchy Sync: Backup Mode ---"
-  log "Target: $target"
-  log "Source HOME: $HOME"
+        # Extract function definitions from each lib file (skip first 2 lines: shebang and comment)
+        for lib in helpers config metadata drives backup restore init; do
+            echo ""
+            echo "# --- $lib ---"
+            tail -n +3 "$SCRIPT_DIR/lib/$lib.sh"
+        done
 
-  mkdir -p "$target"/{packages,config,etc,local_share/applications,bin}
+        echo ""
+        echo "# --- Main ---"
+        echo 'check_dependencies'
+        echo ''
+        echo 'case "${1:-}" in'
+        echo '--init) init_command ;;'
+        echo '--config) config_command ;;'
+        echo '--backup) backup_command ;;'
+        echo '--restore) restore_command ;;'
+        echo '--status) status_command ;;'
+        echo '--version) echo "omarchy-sync v$VERSION" ;;'
+        echo '--help | *)'
+        echo '    cat <<EOF'
+        echo "omarchy-sync v\$VERSION - Arch Linux system backup & restore"
+        echo ''
+        echo 'Usage: omarchy-sync [OPTIONS] <command>'
+        echo ''
+        echo 'Options:'
+        echo '  --test [DIR]  Run in test mode with isolated environment'
+        echo '                Default: ~/.local/share/omarchy-sync/test-env'
+        echo ''
+        echo 'Commands:'
+        echo '  --init      First-time setup or clone from existing remote'
+        echo '  --config    View and modify settings'
+        echo '  --backup    Backup to local, cloud, and/or external drives'
+        echo '  --restore   Restore from local, cloud, or external drive'
+        echo '  --status    Show backup status across all locations'
+        echo '  --version   Show version'
+        echo '  --help      Show this help'
+        echo ''
+        echo 'Examples:'
+        echo '  omarchy-sync --init                 # First-time setup'
+        echo '  omarchy-sync --backup               # Create backup'
+        echo '  omarchy-sync --restore              # Restore from backup'
+        echo '  omarchy-sync --test --init          # Test in isolated env'
+        echo '  omarchy-sync --test /tmp/test --backup'
+        echo 'EOF'
+        echo '    ;;'
+        echo 'esac'
+    } > "$install_path"
 
-  # Create .gitignore if it doesn't exist (safety net for sensitive files)
-  if [[ ! -f "$target/.gitignore" ]]; then
-    log "Creating .gitignore..."
-    cat <<'EOF' >"$target/.gitignore"
-# Prevent accidentally committing sensitive files
-*.key
-*.pem
-id_rsa*
-id_ed25519*
-*.gpg
-*.secret
-EOF
-  fi
+    chmod +x "$install_path"
+    log "Installed to $install_path"
 
-  # A. Package Lists
-  log "Saving package lists..."
-  pacman -Qqen >"$target/packages/pkglist-repo.txt"
-  pacman -Qqem >"$target/packages/pkglist-aur.txt"
+    # Check if ~/.local/bin is in PATH
+    if [[ ":$PATH:" != *":$install_dir:"* ]]; then
+        echo ""
+        log "WARNING: $install_dir is not in your PATH"
+        local shell_rc=""
+        if [[ -f "$HOME/.zshrc" ]]; then
+            shell_rc="$HOME/.zshrc"
+        elif [[ -f "$HOME/.bashrc" ]]; then
+            shell_rc="$HOME/.bashrc"
+        fi
 
-  # B. Configs (with size threshold)
-  log "Syncing ~/.config (threshold: ${SIZE_LIMIT_MB}MB)..."
-  : >"$target/.restore-excludes" # Clear/create file
-
-  for item in "$HOME"/.config/*; do
-    [[ -e "$item" ]] || continue
-    local size
-    size=$(du -sm "$item" 2>/dev/null | cut -f1)
-    if [[ "$size" -lt "$SIZE_LIMIT_MB" ]]; then
-      rsync -aq --delete --exclude='.git' --delete-excluded "$item" "$target/config/"
-    else
-      echo "$item" >>"$target/.restore-excludes"
-      log "Skipped large dir: $item (${size}MB)"
+        if [[ -n "$shell_rc" ]]; then
+            local add_path
+            add_path=$(prompt "Add to $shell_rc? (Y/n): " "y")
+            if [[ "$add_path" =~ ^[yY]$ ]]; then
+                echo '' >> "$shell_rc"
+                echo '# Added by omarchy-sync' >> "$shell_rc"
+                echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$shell_rc"
+                log "Added to $shell_rc. Run 'source $shell_rc' or restart your shell."
+            fi
+        else
+            log "Add this to your shell config: export PATH=\"\$HOME/.local/bin:\$PATH\""
+        fi
     fi
-  done
 
-  # Record .git directories found in source
-  find "$HOME/.config" -name ".git" -type d 2>/dev/null >>"$target/.restore-excludes"
-
-  # C. Local data
-  log "Syncing local data..."
-  rsync -aq --delete --exclude='.git' --delete-excluded "$HOME/.local/share/applications/" "$target/local_share/applications/"
-  [[ -d "$HOME/.local/bin" ]] && rsync -aq --delete --exclude='.git' --delete-excluded "$HOME/.local/bin/" "$target/bin/"
-
-  # D. SSH keys (DISABLED - enable only with encryption)
-  # TODO: Implement GPG encryption before enabling
-  # [[ -d "$HOME/.ssh" ]] && rsync -aq --delete "$HOME/.ssh/" "$target/ssh/"
-
-  # E. System configs
-  log "Backing up system configs..."
-  for file in /etc/pacman.conf /etc/hosts; do
-    if [[ -r "$file" ]]; then
-      cp "$file" "$target/etc/"
-    elif [[ -f "$file" ]]; then
-      sudo cp "$file" "$target/etc/"
-      sudo chown "$USER:$USER" "$target/etc/$(basename "$file")"
-    fi
-  done
-
-  # F. Dconf (GTK/GNOME settings) - optional
-  if command -v dconf &>/dev/null; then
-    log "Dumping dconf settings..."
-    dconf dump / >"$target/dconf_settings.ini" || true
-  fi
-
-  done_ "Backup complete at $target"
-}
-
-push_to_git() {
-  local target
-  target=$(get_target "$1")
-
-  if [[ ! -d "$target/.git" ]]; then
-    error "$target is not a git repository. Initialize with: git -C \"$target\" init"
-    exit 1
-  fi
-
-  log "Pushing to remote..."
-  cd "$target" || exit 1
-
-  git add -A
-  if ! git diff-index --quiet HEAD -- 2>/dev/null; then
-    git commit -m "Sync: $(date +'%Y-%m-%d %H:%M')"
-    git push origin HEAD
-  else
-    log "No changes to push."
-  fi
-}
-
-restore_system() {
-  local target
-  target=$(get_target "$1")
-
-  echo "--- Omarchy Sync: Restore Mode ---"
-  log "Source: $target"
-  log "Destination HOME: $HOME"
-
-  if [[ ! -d "$target/config" ]]; then
-    error "Backup not found at $target"
-    exit 1
-  fi
-
-  # Build exclude list from recorded paths
-  local excludes=()
-  if [[ -f "$target/.restore-excludes" ]]; then
-    log "Loading exclude list..."
-    while IFS= read -r fullpath; do
-      [[ -z "$fullpath" ]] && continue
-      # Convert /home/user/.config/foo to foo for rsync exclude
-      local relpath="${fullpath#$HOME/.config/}"
-      excludes+=(--exclude="$relpath")
-      log "  Will preserve: $fullpath"
-    done <"$target/.restore-excludes"
-  fi
-
-  # Dry run preview
-  log "Calculating changes (dry run)..."
-  echo ""
-
-  echo "=== Directories to be DELETED from ~/.config ==="
-  rsync -nrv --delete "${excludes[@]}" "$target/config/" "$HOME/.config/" 2>/dev/null |
-    grep "^deleting " |
-    grep -E "^deleting [^/]+/$" |
-    head -20 ||
-    echo "(none)"
-
-  local delete_count
-  delete_count=$(rsync -nrv --delete "${excludes[@]}" "$target/config/" "$HOME/.config/" 2>/dev/null | grep -c "^deleting " || echo 0)
-  [[ "$delete_count" -gt 20 ]] && echo "... and $((delete_count - 20)) more files"
-
-  echo ""
-  echo "=== Directories to be ADDED/UPDATED ==="
-  rsync -nrv "${excludes[@]}" "$target/config/" "$HOME/.config/" 2>/dev/null |
-    grep -E "/$" |
-    grep -v "^\./" |
-    head -20 ||
-    echo "(none)"
-
-  local update_count
-  update_count=$(rsync -nrv "${excludes[@]}" "$target/config/" "$HOME/.config/" 2>/dev/null | grep -cv "^$\|^sending\|^total\|^\./$" || echo 0)
-  [[ "$update_count" -gt 20 ]] && echo "... and approximately $((update_count - 20)) more files"
-
-  echo ""
-  read -rp "Proceed with restore? (y/N): " confirm
-  [[ $confirm != [yY] ]] && {
-    echo "Aborted."
-    exit 0
-  }
-
-  # Restore configs
-  log "Restoring ~/.config..."
-  rsync -aq --delete "${excludes[@]}" "$target/config/" "$HOME/.config/"
-
-  log "Restoring local data..."
-  rsync -aq --delete --exclude='.git' --delete-excluded "$target/local_share/applications/" "$HOME/.local/share/applications/"
-  [[ -d "$target/bin" ]] && rsync -aq --delete --exclude='.git' --delete-excluded "$target/bin/" "$HOME/.local/bin/"
-
-  # Restore system configs (requires sudo)
-  if [[ -f "$target/etc/pacman.conf" ]]; then
-    log "Restoring /etc/pacman.conf..."
-    sudo cp "$target/etc/pacman.conf" /etc/pacman.conf
-  fi
-  if [[ -f "$target/etc/hosts" ]]; then
-    log "Restoring /etc/hosts..."
-    sudo cp "$target/etc/hosts" /etc/hosts
-  fi
-
-  # Restore dconf
-  if [[ -f "$target/dconf_settings.ini" ]] && command -v dconf &>/dev/null; then
-    log "Loading dconf settings..."
-    dconf load / <"$target/dconf_settings.ini" || true
-  fi
-
-  done_ "Restore complete."
-  echo ""
-  echo "Next steps:"
-  echo "  1. Reinstall official packages:"
-  echo "     sudo pacman -S --needed - < $target/packages/pkglist-repo.txt"
-  echo "  2. Reinstall AUR packages (with yay/paru):"
-  echo "     yay -S --needed - < $target/packages/pkglist-aur.txt"
-  echo "  3. Reboot or re-login to apply all changes."
-}
-
-show_status() {
-  local target
-  target=$(get_target "$1")
-
-  echo "--- Omarchy Sync: Status ---"
-  echo "Target: $target"
-  [[ -n "${TEST_HOME:-}" ]] && echo "TEST MODE: HOME=$HOME"
-
-  if [[ -d "$target" ]]; then
-    echo "Last backup: $(stat -c %y "$target/packages/pkglist-repo.txt" 2>/dev/null | cut -d. -f1 || echo "unknown")"
-    echo "Repo packages: $(wc -l <"$target/packages/pkglist-repo.txt" 2>/dev/null || echo 0)"
-    echo "AUR packages:  $(wc -l <"$target/packages/pkglist-aur.txt" 2>/dev/null || echo 0)"
-    echo "Config dirs:   $(ls "$target/config" 2>/dev/null | wc -l)"
-    if [[ -f "$target/.restore-excludes" ]]; then
-      echo "Excluded paths: $(wc -l <"$target/.restore-excludes")"
-      echo "Excludes:"
-      sed 's/^/  /' "$target/.restore-excludes"
-    fi
-    if [[ -d "$target/.git" ]]; then
-      echo "Git status:    $(git -C "$target" status --porcelain | wc -l) uncommitted changes"
-    fi
-  else
-    echo "No backup found."
-  fi
+    echo ""
+    done_ "Installation complete. Run 'omarchy-sync --help' to get started."
 }
 
 # --- Main ---
-
 check_dependencies
 
 case "${1:-}" in
+--init) init_command ;;
+--config) config_command ;;
+--backup) backup_command ;;
+--restore) restore_command ;;
+--status) status_command ;;
 --install) install_command ;;
---backup) capture_system "${2:-}" ;;
---restore) restore_system "${2:-}" ;;
---push) push_to_git "${2:-}" ;;
---status) show_status "${2:-}" ;;
 --version) echo "omarchy-sync v$VERSION" ;;
 --help | *)
-  cat <<EOF
+    cat <<EOF
 omarchy-sync v$VERSION - Arch Linux system backup & restore
 
-Usage: omarchy-sync <command> [target_path]
+Usage: omarchy-sync [OPTIONS] <command>
+
+Options:
+  --test [DIR]  Run in test mode with isolated environment
+                Default: ~/.local/share/omarchy-sync/test-env
 
 Commands:
-  --backup   Capture system state to target directory
-  --restore  Restore system state from target directory
-  --push     Commit and push target directory to git remote
-  --status   Show backup status and statistics
-  --install  Install this script to ~/.local/bin
-  --version  Show version
-  --help     Show this help
-
-Default target: $DEFAULT_TARGET
-
-Test mode:
-  TEST_HOME=/tmp/test-home omarchy-sync --backup /tmp/test-backup
+  --init      First-time setup or clone from existing remote
+  --config    View and modify settings
+  --backup    Backup to local, cloud, and/or external drives
+  --restore   Restore from local, cloud, or external drive
+  --status    Show backup status across all locations
+  --install   Install to ~/.local/bin/omarchy-sync
+  --version   Show version
+  --help      Show this help
 
 Examples:
-  omarchy-sync --backup                    # Backup to default location
-  omarchy-sync --backup /mnt/usb/backup    # Backup to custom location
-  omarchy-sync --restore                   # Restore from default location
-  omarchy-sync --push                      # Push backup to git remote
+  omarchy-sync --init                 # First-time setup
+  omarchy-sync --backup               # Create backup
+  omarchy-sync --restore              # Restore from backup
+  omarchy-sync --test --init          # Test in isolated env
+  omarchy-sync --test /tmp/test --backup
 EOF
-  ;;
+    ;;
 esac
