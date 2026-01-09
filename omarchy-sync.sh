@@ -1,10 +1,18 @@
 #!/bin/bash
 set -euo pipefail
 
-VERSION="0.9.0"
+VERSION="1.0.0"
 INSTALL_PATH="$HOME/.local/bin/omarchy-sync"
 DEFAULT_TARGET="$HOME/.omarchy-backup"
 SIZE_LIMIT_MB=20
+
+# Test mode: override HOME with TEST_HOME environment variable
+# Usage: TEST_HOME=/tmp/test-home omarchy-sync --backup /tmp/test-backup
+if [[ -n "${TEST_HOME:-}" ]]; then
+  echo "=== TEST MODE: Using HOME=$TEST_HOME ==="
+  HOME="$TEST_HOME"
+  DEFAULT_TARGET="$TEST_HOME/.omarchy-backup"
+fi
 
 # --- Helpers ---
 
@@ -31,7 +39,7 @@ install_command() {
 
 check_dependencies() {
   local missing=()
-  for cmd in rsync pacman git; do
+  for cmd in rsync pacman git find; do
     command -v "$cmd" &>/dev/null || missing+=("$cmd")
   done
   if [[ ${#missing[@]} -gt 0 ]]; then
@@ -48,6 +56,7 @@ capture_system() {
 
   echo "--- Omarchy Sync: Backup Mode ---"
   log "Target: $target"
+  log "Source HOME: $HOME"
 
   mkdir -p "$target"/{packages,config,etc,local_share/applications,bin}
 
@@ -72,7 +81,8 @@ EOF
 
   # B. Configs (with size threshold)
   log "Syncing ~/.config (threshold: ${SIZE_LIMIT_MB}MB)..."
-  local skipped=()
+  : >"$target/.restore-excludes" # Clear/create file
+
   for item in "$HOME"/.config/*; do
     [[ -e "$item" ]] || continue
     local size
@@ -80,18 +90,18 @@ EOF
     if [[ "$size" -lt "$SIZE_LIMIT_MB" ]]; then
       rsync -aq --delete --exclude='.git' --delete-excluded "$item" "$target/config/"
     else
-      skipped+=("$(basename "$item") (${size}MB)")
+      echo "$item" >>"$target/.restore-excludes"
+      log "Skipped large dir: $item (${size}MB)"
     fi
   done
 
-  if [[ ${#skipped[@]} -gt 0 ]]; then
-    log "Skipped large dirs: ${skipped[*]}"
-  fi
+  # Record .git directories found in source
+  find "$HOME/.config" -name ".git" -type d 2>/dev/null >>"$target/.restore-excludes"
 
   # C. Local data
   log "Syncing local data..."
   rsync -aq --delete --exclude='.git' --delete-excluded "$HOME/.local/share/applications/" "$target/local_share/applications/"
-  [[ -d "$HOME/.local/bin" ]] && rsync -aq --delete "$HOME/.local/bin/" "$target/bin/"
+  [[ -d "$HOME/.local/bin" ]] && rsync -aq --delete --exclude='.git' --delete-excluded "$HOME/.local/bin/" "$target/bin/"
 
   # D. SSH keys (DISABLED - enable only with encryption)
   # TODO: Implement GPG encryption before enabling
@@ -144,22 +154,54 @@ restore_system() {
 
   echo "--- Omarchy Sync: Restore Mode ---"
   log "Source: $target"
+  log "Destination HOME: $HOME"
 
   if [[ ! -d "$target/config" ]]; then
     error "Backup not found at $target"
     exit 1
   fi
 
+  # Build exclude list from recorded paths
+  local excludes=()
+  if [[ -f "$target/.restore-excludes" ]]; then
+    log "Loading exclude list..."
+    while IFS= read -r fullpath; do
+      [[ -z "$fullpath" ]] && continue
+      # Convert /home/user/.config/foo to foo for rsync exclude
+      local relpath="${fullpath#$HOME/.config/}"
+      excludes+=(--exclude="$relpath")
+      log "  Will preserve: $fullpath"
+    done <"$target/.restore-excludes"
+  fi
+
   # Dry run preview
   log "Calculating changes (dry run)..."
   echo ""
-  echo "=== Files to be DELETED from ~/.config ==="
-  rsync -nrv --delete "$target/config/" "$HOME/.config/" 2>/dev/null | grep "^deleting " || echo "(none)"
-  echo ""
-  echo "=== Files to be ADDED/UPDATED ==="
-  rsync -nrv "$target/config/" "$HOME/.config/" 2>/dev/null | grep -E "^[^.]" | head -20 || echo "(none)"
-  echo ""
 
+  echo "=== Directories to be DELETED from ~/.config ==="
+  rsync -nrv --delete "${excludes[@]}" "$target/config/" "$HOME/.config/" 2>/dev/null |
+    grep "^deleting " |
+    grep -E "^deleting [^/]+/$" |
+    head -20 ||
+    echo "(none)"
+
+  local delete_count
+  delete_count=$(rsync -nrv --delete "${excludes[@]}" "$target/config/" "$HOME/.config/" 2>/dev/null | grep -c "^deleting " || echo 0)
+  [[ "$delete_count" -gt 20 ]] && echo "... and $((delete_count - 20)) more files"
+
+  echo ""
+  echo "=== Directories to be ADDED/UPDATED ==="
+  rsync -nrv "${excludes[@]}" "$target/config/" "$HOME/.config/" 2>/dev/null |
+    grep -E "/$" |
+    grep -v "^\./" |
+    head -20 ||
+    echo "(none)"
+
+  local update_count
+  update_count=$(rsync -nrv "${excludes[@]}" "$target/config/" "$HOME/.config/" 2>/dev/null | grep -cv "^$\|^sending\|^total\|^\./$" || echo 0)
+  [[ "$update_count" -gt 20 ]] && echo "... and approximately $((update_count - 20)) more files"
+
+  echo ""
   read -rp "Proceed with restore? (y/N): " confirm
   [[ $confirm != [yY] ]] && {
     echo "Aborted."
@@ -168,11 +210,11 @@ restore_system() {
 
   # Restore configs
   log "Restoring ~/.config..."
-  rsync -aq --delete "$target/config/" "$HOME/.config/"
+  rsync -aq --delete "${excludes[@]}" "$target/config/" "$HOME/.config/"
 
   log "Restoring local data..."
-  rsync -aq --delete "$target/local_share/applications/" "$HOME/.local/share/applications/"
-  [[ -d "$target/bin" ]] && rsync -aq --delete "$target/bin/" "$HOME/.local/bin/"
+  rsync -aq --delete --exclude='.git' --delete-excluded "$target/local_share/applications/" "$HOME/.local/share/applications/"
+  [[ -d "$target/bin" ]] && rsync -aq --delete --exclude='.git' --delete-excluded "$target/bin/" "$HOME/.local/bin/"
 
   # Restore system configs (requires sudo)
   if [[ -f "$target/etc/pacman.conf" ]]; then
@@ -206,12 +248,18 @@ show_status() {
 
   echo "--- Omarchy Sync: Status ---"
   echo "Target: $target"
+  [[ -n "${TEST_HOME:-}" ]] && echo "TEST MODE: HOME=$HOME"
 
   if [[ -d "$target" ]]; then
     echo "Last backup: $(stat -c %y "$target/packages/pkglist-repo.txt" 2>/dev/null | cut -d. -f1 || echo "unknown")"
     echo "Repo packages: $(wc -l <"$target/packages/pkglist-repo.txt" 2>/dev/null || echo 0)"
     echo "AUR packages:  $(wc -l <"$target/packages/pkglist-aur.txt" 2>/dev/null || echo 0)"
     echo "Config dirs:   $(ls "$target/config" 2>/dev/null | wc -l)"
+    if [[ -f "$target/.restore-excludes" ]]; then
+      echo "Excluded paths: $(wc -l <"$target/.restore-excludes")"
+      echo "Excludes:"
+      sed 's/^/  /' "$target/.restore-excludes"
+    fi
     if [[ -d "$target/.git" ]]; then
       echo "Git status:    $(git -C "$target" status --porcelain | wc -l) uncommitted changes"
     fi
@@ -239,7 +287,7 @@ Usage: omarchy-sync <command> [target_path]
 
 Commands:
   --backup   Capture system state to target directory
-  --restore  Restore system state from target directory  
+  --restore  Restore system state from target directory
   --push     Commit and push target directory to git remote
   --status   Show backup status and statistics
   --install  Install this script to ~/.local/bin
@@ -247,6 +295,9 @@ Commands:
   --help     Show this help
 
 Default target: $DEFAULT_TARGET
+
+Test mode:
+  TEST_HOME=/tmp/test-home omarchy-sync --backup /tmp/test-backup
 
 Examples:
   omarchy-sync --backup                    # Backup to default location
