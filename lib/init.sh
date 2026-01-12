@@ -60,10 +60,24 @@ init_command() {
         local backup_ts
         backup_ts=$(get_metadata_field "$local_path" "timestamp")
 
+        # Ensure backup directory has proper permissions
+        chmod 700 "$local_path" 2>/dev/null || true
+        if [[ -d "$local_path/.git" ]]; then
+            chmod 700 "$local_path/.git" 2>/dev/null || true
+        fi
+
         echo ""
         done_ "Setup complete."
         log "Found backup from host '$backup_host' ($backup_ts)"
         log "Run 'omarchy-sync --restore' to restore configs."
+
+        # Offer to install executable
+        echo ""
+        local install_confirm
+        install_confirm=$(prompt "Install executable to ~/.local/bin? (Y/n): " "y")
+        if [[ "$install_confirm" =~ ^[yY]$ ]]; then
+            install_command
+        fi
 
     else
         # Fresh setup
@@ -112,11 +126,25 @@ init_command() {
             git_with_signing push -u origin HEAD
         fi
 
+        # Ensure backup directory has proper permissions
+        chmod 700 "$local_path" 2>/dev/null || true
+        if [[ -d "$local_path/.git" ]]; then
+            chmod 700 "$local_path/.git" 2>/dev/null || true
+        fi
+
         echo ""
         done_ "Setup complete."
         log "Config saved to: $CONFIG_FILE"
         log "Backup location: $local_path"
         log "Run 'omarchy-sync --backup' to create new backups."
+
+        # Offer to install executable
+        echo ""
+        local install_confirm
+        install_confirm=$(prompt "Install executable to ~/.local/bin? (Y/n): " "y")
+        if [[ "$install_confirm" =~ ^[yY]$ ]]; then
+            install_command
+        fi
     fi
 }
 

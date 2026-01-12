@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-VERSION="1.3.2"
+VERSION="1.3.4"
 
 # Determine script location for sourcing modules
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -81,6 +81,8 @@ if [[ "$TEST_MODE" == true ]]; then
 fi
 
 # --- Source modules ---
+# IMPORTANT: Keep this source order in sync with the module list in install_command() (line 188)
+# If you add a new module, update BOTH lists
 source "$SCRIPT_DIR/lib/helpers.sh"
 source "$SCRIPT_DIR/lib/config.sh"
 source "$SCRIPT_DIR/lib/metadata.sh"
@@ -183,7 +185,19 @@ install_command() {
     echo ''
 
     # Extract function definitions from each lib file (skip first 2 lines: shebang and comment)
-    for lib in helpers config metadata drives backup restore init; do
+    # IMPORTANT: This list must match the source order at the top of omarchy-sync.sh (lines 84-91)
+    # If a new module is added, update BOTH lists to maintain consistency
+    local modules=(helpers config metadata drives backup restore secrets init)
+
+    # Validate all modules exist
+    for module in "${modules[@]}"; do
+        if [[ ! -f "$SCRIPT_DIR/lib/$module.sh" ]]; then
+            error "Missing module: $SCRIPT_DIR/lib/$module.sh"
+            return 1
+        fi
+    done
+
+    for lib in "${modules[@]}"; do
       echo ""
       echo "# --- $lib ---"
       tail -n +3 "$SCRIPT_DIR/lib/$lib.sh"
@@ -361,6 +375,7 @@ Options:
 
 Commands:
   --init      First-time setup or clone from existing remote
+              (will offer to install executable to ~/.local/bin)
   --config    View and modify settings
   --backup    Backup to local, cloud, and/or external drives
   --restore   Restore from local, cloud, or external drive

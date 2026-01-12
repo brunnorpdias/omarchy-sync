@@ -15,6 +15,22 @@ Backup and restore tool for Arch Linux (Omarchy) systems.
 
 ## Installation
 
+### Easiest: Run `--init` to setup and install
+
+```bash
+./omarchy-sync.sh --init
+```
+
+The `--init` command will:
+- Create your backup directory
+- Initialize git repository (for version tracking)
+- Run your first backup
+- Offer to install the script to `~/.local/bin/omarchy-sync` for easy access
+
+### Manual installation
+
+If you prefer to install separately:
+
 ```bash
 ./omarchy-sync.sh --install
 ```
@@ -33,13 +49,13 @@ omarchy-sync --restore   # Restore from backup
 
 | Command | Description |
 |---------|-------------|
-| `--init` | First-time setup or clone from existing remote |
+| `--init` | First-time setup or clone from existing remote (offers to install executable) |
 | `--config` | View and modify settings |
 | `--backup` | Backup to local, cloud, and/or external drives |
 | `--restore` | Restore from local, cloud, or external drive |
 | `--verify` | Verify backup integrity using checksums |
 | `--status` | Show backup status across all locations |
-| `--install` | Install to ~/.local/bin/omarchy-sync |
+| `--install` | Install to ~/.local/bin/omarchy-sync (called automatically by `--init`) |
 | `--version` | Show version |
 | `--help` | Show help |
 
@@ -101,6 +117,59 @@ You can add custom exclusions in `config.toml`:
 [machine_specific]
 additional = ["myapp/hardware-config"]
 ```
+
+## Filesystem Support & Symlinks
+
+**Supported Filesystems:**
+
+| Filesystem | Status | Symlink Handling |
+|-----------|--------|------------------|
+| ext4, btrfs, xfs, f2fs | ✅ Full Support | Symlinks preserved as symlinks |
+| exFAT, FAT32, MSDOS | ✅ Supported | Symlinks converted to files, recreated on restore |
+| NTFS | ❌ Not Supported | Rejected with error message |
+| vfat | ❌ Not Supported | Rejected with error message (EFI/boot partitions) |
+
+**Filesystem Transparency:**
+
+omarchy-sync displays the filesystem type when backing up and restoring, so you always know where your data is going:
+
+Backup example:
+```
+[*] Backing up to local (/home/user/.local/share/omarchy-sync/backup) [ext4]
+[*] Syncing to internal drive: MyDrive (/mnt/hd/omarchy-backup) [exFAT]
+[WARN] Target filesystem: exfat (does not support symlinks)
+[WARN] Symlinks will be converted to regular files (reversible via .symlinks manifest)
+[WARN] Backup size will be larger. Symlinks automatically recreated on restore.
+```
+
+Restore example:
+```
+Available restore sources:
+  1. Local (/home/user/.local/share/omarchy-sync/backup) [ext4]
+     Last backup: 2026-01-12, host: omarchy
+  2. MyData (/mnt/hd/omarchy-backup) [exFAT]
+     Last backup: 2026-01-12, host: omarchy
+```
+
+**Symlink Handling:**
+
+omarchy-sync automatically detects the filesystem type and handles symlinks appropriately:
+
+- **Native Linux filesystems (ext4, btrfs, xfs, f2fs):** Symlinks are preserved as symlinks during backup and restore
+- **FAT variants (exFAT, FAT32, MSDOS):** Since these filesystems don't support symlinks, files they point to are copied instead. A `.symlinks` manifest records symlink information, and symlinks are automatically recreated during restore
+- **Unsupported (NTFS, vfat):** Backups are rejected with an error message. Use exFAT instead for cross-platform USB drives
+- **Cross-machine restore:** Symlinks pointing to broken locations are preserved as symlinks (not deleted), allowing manual fixing if needed
+
+**Example:**
+
+Your system has: `~/.local/bin/claude` → symlink to `~/.local/share/claude/versions/2.1.5`
+
+- Backup to ext4: Symlink preserved
+- Backup to exFAT: File copied (220MB), symlink info stored in `.symlinks` manifest
+- Restore from exFAT: Symlink automatically recreated from manifest
+- Backup to NTFS: Error - "NTFS is not supported (unreliable on Linux). Please use exFAT or a native Linux filesystem instead"
+
+This ensures your system never receives corrupted 220MB binary files in place of symlinks, and you have clear visibility into potential limitations.
 
 ## SSH Key Encryption
 

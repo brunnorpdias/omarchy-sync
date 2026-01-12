@@ -78,6 +78,40 @@ backup_browser_data() {
     done
 }
 
+create_symlink_manifest() {
+    local target="$1"
+    : >"$target/.symlinks"
+
+    # Record symlinks in config/
+    find "$target/config" -type l -print 2>/dev/null | while read -r link; do
+        local link_target
+        link_target=$(readlink "$link")
+        # Store as: HOME-relative-path|target
+        local relpath="${link#$target/config/}"
+        echo ".config/$relpath|$link_target" >>"$target/.symlinks"
+    done
+
+    # Record symlinks in bin/
+    find "$target/bin" -type l -print 2>/dev/null | while read -r link; do
+        local link_target
+        link_target=$(readlink "$link")
+        local relpath="${link#$target/bin/}"
+        echo ".local/bin/$relpath|$link_target" >>"$target/.symlinks"
+    done
+
+    # Record symlinks in local_share/applications/
+    find "$target/local_share/applications" -type l -print 2>/dev/null | while read -r link; do
+        local link_target
+        link_target=$(readlink "$link")
+        local relpath="${link#$target/local_share/applications/}"
+        echo ".local/share/applications/$relpath|$link_target" >>"$target/.symlinks"
+    done
+
+    local count
+    count=$(wc -l <"$target/.symlinks" 2>/dev/null || echo 0)
+    [[ "$count" -gt 0 ]] && log "Recorded $count symlink(s)"
+}
+
 do_backup_to_target() {
     # Backup structure:
     #   packages/           - Package lists (pkglist-repo.txt, pkglist-aur.txt)
@@ -92,6 +126,7 @@ do_backup_to_target() {
     #   .backup-meta        - Metadata (timestamp, hostname, checksums)
     #   .restore-excludes   - HOME-relative paths of skipped items (e.g., .config/chromium)
     #   .machine-specific   - HOME-relative paths of machine-specific configs
+    #   .symlinks           - HOME-relative paths of symlinks and their targets (format: .config/x|target)
     #   .gitignore          - Prevent committing secrets
     #
     # Path convention: All paths in metadata files use HOME-relative format
@@ -187,7 +222,10 @@ EOF
     # I. Tag machine-specific configs for cross-machine restore handling
     create_machine_specific_list "$target"
 
-    # J. Write metadata
+    # J. Create symlink manifest for cross-filesystem restore
+    create_symlink_manifest "$target"
+
+    # K. Write metadata
     write_metadata "$target"
 }
 
@@ -205,7 +243,7 @@ backup_command() {
     remote_url=$(get_remote_url)
 
     # 1. Always backup to local
-    log "Backing up to local ($local_path)..."
+    log "Backing up to local ($(format_path_with_fs "$local_path"))..."
     do_backup_to_target "$local_path"
 
     # Commit if git is configured
@@ -230,7 +268,15 @@ backup_command() {
             if [[ -d "$parent_dir" ]]; then
                 # Test write access
                 if [[ -w "$parent_dir" ]] || [[ -w "$path" ]]; then
-                    log "Syncing to internal drive: $label ($path)..."
+                    log "Syncing to internal drive: $label ($(format_path_with_fs "$parent_dir"))..."
+
+                    # Validate filesystem - reject NTFS/vfat (check parent since path doesn't exist yet)
+                    if ! validate_filesystem "$parent_dir"; then
+                        warn "Skipping internal drive backup (unsupported filesystem)"
+                        continue
+                    fi
+
+                    warn_symlink_conversion "$parent_dir"
                     mkdir -p "$path"
                     local rsync_opts
                     rsync_opts=$(get_rsync_opts_for_path "$path")
@@ -278,7 +324,18 @@ backup_command() {
 
                     if [[ -n "$mountpoint" ]] && [[ -d "$mountpoint" ]]; then
                         local drive_target="$mountpoint/omarchy-backup"
-                        log "Syncing to external drive: $drive_target..."
+                        log "Syncing to external drive: $(format_path_with_fs "$mountpoint")..."
+
+                        # Validate filesystem - reject NTFS/vfat (check mountpoint since drive_target doesn't exist yet)
+                        if ! validate_filesystem "$mountpoint"; then
+                            warn "Skipping external drive backup (unsupported filesystem)"
+                            if [[ "$was_mounted" == false ]]; then
+                                unmount_drive "$device"
+                            fi
+                            continue
+                        fi
+
+                        warn_symlink_conversion "$mountpoint"
                         mkdir -p "$drive_target"
                         local rsync_opts
                         rsync_opts=$(get_rsync_opts_for_path "$drive_target")

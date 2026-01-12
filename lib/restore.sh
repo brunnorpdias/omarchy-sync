@@ -1,6 +1,37 @@
 #!/bin/bash
 # restore.sh - Restore functionality
 
+restore_symlinks() {
+    local source="$1"
+
+    [[ ! -f "$source/.symlinks" ]] && return 0
+
+    log "Restoring symlinks..."
+    local restored=0 failed=0
+
+    while IFS='|' read -r relpath link_target; do
+        [[ -z "$relpath" ]] && continue
+        local fullpath="$HOME/${relpath#./}"
+
+        # Only restore if it's currently a regular file (was converted from symlink)
+        if [[ -f "$fullpath" && ! -L "$fullpath" ]]; then
+            rm "$fullpath"
+            if ln -s "$link_target" "$fullpath" 2>/dev/null; then
+                ((restored++))
+            else
+                warn "Failed to create symlink: $fullpath -> $link_target"
+                ((failed++))
+            fi
+        elif [[ -L "$fullpath" ]]; then
+            # Already a symlink, skip
+            :
+        fi
+    done <"$source/.symlinks"
+
+    [[ "$restored" -gt 0 ]] && log "Restored $restored symlink(s)"
+    [[ "$failed" -gt 0 ]] && warn "$failed symlink(s) could not be restored"
+}
+
 restore_browser_data() {
     local source="$1"
 
@@ -133,7 +164,7 @@ restore_command() {
         local_ts=$(get_metadata_field "$local_path" "timestamp")
         local local_host
         local_host=$(get_metadata_field "$local_path" "hostname")
-        echo "    $i. Local ($local_path)"
+        echo "    $i. Local ($(format_path_with_fs "$local_path"))"
         echo "       Last backup: $local_ts, host: $local_host"
         sources+=("local|$local_path")
         ((i++))
@@ -161,7 +192,7 @@ restore_command() {
                 drive_ts=$(get_metadata_field "$check_path" "timestamp")
                 local drive_host
                 drive_host=$(get_metadata_field "$check_path" "hostname")
-                echo "    $i. ${label:-$device} ($size, $fstype)"
+                echo "    $i. ${label:-$device} ($(format_path_with_fs "$check_path"))"
                 echo "       Last backup: $drive_ts, host: $drive_host"
                 sources+=("drive|$device|$mountpoint")
                 ((i++))
@@ -323,11 +354,11 @@ restore_command() {
     if [[ "$components" == *4* ]]; then
         if [[ -f "$restore_path/etc/pacman.conf" ]]; then
             log "Restoring /etc/pacman.conf..."
-            sudo cp "$restore_path/etc/pacman.conf" /etc/pacman.conf
+            sudo cp "$restore_path/etc/pacman.conf" /etc/pacman.conf || warn "Failed to restore /etc/pacman.conf (requires sudo)"
         fi
         if [[ -f "$restore_path/etc/hosts" ]]; then
             log "Restoring /etc/hosts..."
-            sudo cp "$restore_path/etc/hosts" /etc/hosts
+            sudo cp "$restore_path/etc/hosts" /etc/hosts || warn "Failed to restore /etc/hosts (requires sudo)"
         fi
     fi
 
@@ -374,6 +405,9 @@ restore_command() {
             log "  $restore_path/packages/pkglist-aur.txt"
         fi
     fi
+
+    # Restore symlinks from manifest (after all file operations)
+    restore_symlinks "$restore_path"
 
     echo ""
     done_ "Restore complete. Reboot recommended."

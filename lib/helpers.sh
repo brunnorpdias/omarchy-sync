@@ -151,6 +151,62 @@ git_with_signing() {
 # ============================================================================
 # Filesystem helpers
 # ============================================================================
+# Get filesystem type for a given path
+get_filesystem_type() {
+    local path="$1"
+    df --output=fstype "$path" 2>/dev/null | tail -1
+}
+
+# Format a path with its filesystem type in brackets
+format_path_with_fs() {
+    local path="$1"
+    local fstype
+    fstype=$(get_filesystem_type "$path")
+    echo "$path [$fstype]"
+}
+
+# Validate that a filesystem is supported
+# Returns 0 if valid, 1 if rejected with error message
+validate_filesystem() {
+    local path="$1"
+    local fstype
+    fstype=$(get_filesystem_type "$path")
+
+    # Reject unsupported filesystems
+    case "$fstype" in
+        ntfs)
+            error "NTFS is not supported (unreliable on Linux)"
+            error "Please use exFAT or a native Linux filesystem instead"
+            return 1
+            ;;
+        vfat)
+            error "vfat is not supported (typically EFI/boot partitions)"
+            error "Please use exFAT or a native Linux filesystem instead"
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# Warn about symlink conversion for filesystems that don't support them
+# Returns 0 if warning shown, 1 if no warning needed
+warn_symlink_conversion() {
+    local path="$1"
+    local fstype
+    fstype=$(get_filesystem_type "$path")
+
+    case "$fstype" in
+        exfat|fat32|msdos)
+            echo ""
+            warn "Target filesystem: $fstype (does not support symlinks)"
+            warn "Symlinks will be converted to regular files (reversible via .symlinks manifest)"
+            warn "Backup size will be larger. Symlinks automatically recreated on restore."
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 # Returns rsync options for a given path based on filesystem capabilities
 get_rsync_opts_for_path() {
     local path="$1"
@@ -158,11 +214,11 @@ get_rsync_opts_for_path() {
 
     # Get filesystem type for the path
     local fstype
-    fstype=$(df --output=fstype "$path" 2>/dev/null | tail -1)
+    fstype=$(get_filesystem_type "$path")
 
-    # Filesystems that don't support symlinks
+    # Filesystems that don't support symlinks (exFAT/FAT32/MSDOS only - NTFS/vfat rejected earlier)
     case "$fstype" in
-        exfat|vfat|fat32|ntfs|msdos)
+        exfat|fat32|msdos)
             opts="$opts --copy-links"
             log_write "INFO" "Using --copy-links for $fstype filesystem at $path"
             ;;
