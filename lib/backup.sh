@@ -136,6 +136,31 @@ do_backup_to_target() {
     local size_limit
     size_limit=$(get_size_limit)
 
+    # If dry-run, show what would be backed up without actually backing up
+    if [[ "${DRY_RUN:-false}" == true ]]; then
+        log "DRY RUN: Showing what would be backed up..."
+        echo ""
+        echo "=== What would be backed up ==="
+        echo "Configs from ~/.config (files under ${size_limit}MB)"
+        for item in "$HOME"/.config/*; do
+            [[ -e "$item" ]] || continue
+            local size
+            size=$(du -sm "$item" 2>/dev/null | cut -f1)
+            if [[ "$size" -lt "$size_limit" ]]; then
+                echo "  + ${item#$HOME/} (${size}MB)"
+            else
+                echo "  - ${item#$HOME/} (${size}MB, SKIPPED - too large)"
+            fi
+        done
+        echo ""
+        echo "Packages (repo + AUR)"
+        echo "  + packages/pkglist-repo.txt"
+        echo "  + packages/pkglist-aur.txt"
+        echo ""
+        echo "[*] Dry-run complete. No files were written."
+        return 0
+    fi
+
     local mkdir_output
     mkdir_output=$(mkdir -p "$target"/{packages,config,etc,local_share/applications,bin} 2>&1)
     if [[ $? -ne 0 ]] || [[ ! -d "$target" ]]; then
@@ -244,17 +269,25 @@ backup_command() {
 
     # 1. Always backup to local
     log "Backing up to local ($(format_path_with_fs "$local_path"))..."
-    do_backup_to_target "$local_path"
+    if ! do_backup_to_target "$local_path"; then
+        error "Backup to local destination failed"
+        return 1
+    fi
 
     # Commit if git is configured
     if [[ -d "$local_path/.git" ]]; then
         cd "$local_path" || exit 1
         git add -A
-        if ! git diff-index --quiet HEAD -- 2>/dev/null; then
-            git_with_signing commit -m "Sync: $(date +'%Y-%m-%d %H:%M')"
-            log "Committed changes."
-        else
+        # Use git diff-index --cached to check if there are staged changes (more reliable than diff-index HEAD)
+        if git diff-index --cached --quiet HEAD 2>/dev/null; then
             log "No changes to commit."
+        else
+            if ! git_with_signing commit -m "Sync: $(date +'%Y-%m-%d %H:%M')"; then
+                warn "Failed to commit backup changes (local backup still updated)"
+                warn "Check git configuration: git config --list"
+            else
+                log "Committed backup changes."
+            fi
         fi
     fi
 
@@ -336,7 +369,22 @@ backup_command() {
                         fi
 
                         warn_symlink_conversion "$mountpoint"
-                        mkdir -p "$drive_target"
+
+                        # Try to create directory, with sudo if needed
+                        if ! mkdir -p "$drive_target" 2>/dev/null; then
+                            # Permission denied, try with sudo
+                            if sudo mkdir -p "$drive_target" 2>/dev/null; then
+                                log "Created directory with sudo privileges"
+                            else
+                                warn "Cannot create directory at $drive_target (permission denied)"
+                                warn "Try: sudo chown -R $USER:$USER $mountpoint"
+                                if [[ "$was_mounted" == false ]]; then
+                                    unmount_drive "$device"
+                                fi
+                                continue
+                            fi
+                        fi
+
                         local rsync_opts
                         rsync_opts=$(get_rsync_opts_for_path "$drive_target")
                         # shellcheck disable=SC2086

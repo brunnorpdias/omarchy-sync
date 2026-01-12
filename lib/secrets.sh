@@ -4,86 +4,87 @@
 backup_secrets() {
     local target="$1"
 
+    # Check if age is installed
     if ! command -v age &>/dev/null; then
         warn "age not installed - skipping SSH key backup"
         return 0
     fi
 
-    local ssh_dir="$HOME/.ssh"
-    [[ ! -d "$ssh_dir" ]] && return 0
-
-    # Find SSH public key for encryption
-    local pubkey=""
-    for key in "$ssh_dir"/id_*.pub; do
-        [[ -f "$key" ]] && { pubkey="$key"; break; }
-    done
+    # Get encryption public key from config
+    local pubkey
+    pubkey=$(get_encryption_public_key)
 
     if [[ -z "$pubkey" ]]; then
-        warn "No SSH public key found - skipping SSH key backup"
+        warn "No encryption key configured - skipping SSH key backup"
+        warn "Run 'omarchy-sync --config' to set up encryption"
+        return 0
+    fi
+
+    local ssh_dir="$HOME/.ssh"
+    if [[ ! -d "$ssh_dir" ]]; then
+        log "No ~/.ssh directory - skipping SSH key backup"
         return 0
     fi
 
     log "Encrypting SSH keys..."
     mkdir -p "$target/secrets"
 
-    # Create tarball excluding non-essential files
-    if tar -C "$HOME" -cf - \
-        --exclude='*.sock' \
-        --exclude='agent.*' \
-        --exclude='known_hosts*' \
-        .ssh/ 2>/dev/null | age -R "$pubkey" > "$target/secrets/ssh.tar.age" 2>/dev/null; then
+    # Create tarball and encrypt with age native public key
+    if tar -czf - -C "$HOME" .ssh 2>/dev/null | \
+       age -r "$pubkey" > "$target/secrets/ssh.tar.age" 2>/dev/null; then
         log "SSH keys encrypted successfully"
     else
         warn "Failed to encrypt SSH keys"
-        rm -f "$target/secrets/ssh.tar.age"
+        return 1
     fi
 }
 
 restore_secrets() {
     local source="$1"
+    local encrypted_file="$source/secrets/ssh.tar.age"
 
-    [[ ! -f "$source/secrets/ssh.tar.age" ]] && return 0
+    # Check if encrypted backup exists
+    if [[ ! -f "$encrypted_file" ]]; then
+        return 0
+    fi
 
+    # Check if age is installed
     if ! command -v age &>/dev/null; then
-        error "age not installed - cannot restore SSH keys"
+        warn "age not installed - cannot restore SSH keys"
+        warn "Install with: sudo pacman -S age"
+        return 0
+    fi
+
+    echo ""
+    log "Restoring encrypted SSH keys..."
+    echo ""
+    echo "Enter the path to your age private key file"
+    echo "(the key shown during --init setup)"
+    echo ""
+
+    local privkey_path
+    read -rp "Private key path: " privkey_path
+    privkey_path="${privkey_path/#\~/$HOME}"
+
+    if [[ ! -f "$privkey_path" ]]; then
+        error "Private key file not found: $privkey_path"
+        error "Cannot restore SSH keys without private key"
         return 1
     fi
 
-    # Find SSH private key for decryption
-    local privkey=""
-    for key in "$HOME/.ssh"/id_ed25519 "$HOME/.ssh"/id_rsa; do
-        [[ -f "$key" ]] && { privkey="$key"; break; }
-    done
+    # Decrypt and extract
+    if age -d -i "$privkey_path" "$encrypted_file" 2>/dev/null | \
+       tar -xzf - -C "$HOME" 2>/dev/null; then
 
-    # If not found, prompt user for key path
-    if [[ -z "$privkey" ]]; then
-        echo ""
-        log "No SSH private key found at default locations (~/.ssh/id_ed25519, ~/.ssh/id_rsa)"
-        read -rp "Enter path to SSH private key (or press Enter to skip): " privkey
-
-        if [[ -z "$privkey" ]]; then
-            warn "Skipping SSH key restore"
-            warn "Manual: age -d -i YOUR_KEY $source/secrets/ssh.tar.age | tar -C ~ -xf -"
-            return 0
-        fi
-
-        if [[ ! -f "$privkey" ]]; then
-            error "Key file not found: $privkey"
-            return 1
-        fi
-    fi
-
-    log "Decrypting SSH keys using $privkey..."
-    # age will use SSH agent (1Password) for decryption if available
-    if age -d -i "$privkey" "$source/secrets/ssh.tar.age" 2>/dev/null | tar -C "$HOME" -xf - 2>/dev/null; then
-        log "SSH keys restored successfully"
-        # Ensure correct permissions
+        # Set correct permissions
         chmod 700 "$HOME/.ssh"
-        chmod 600 "$HOME/.ssh"/id_* 2>/dev/null || true
-        chmod 644 "$HOME/.ssh"/*.pub 2>/dev/null || true
+        find "$HOME/.ssh" -type f -name "id_*" ! -name "*.pub" -exec chmod 600 {} \;
+        find "$HOME/.ssh" -type f -name "*.pub" -exec chmod 644 {} \;
+
+        log "SSH keys restored successfully"
     else
         error "Failed to decrypt SSH keys"
-        error "You may need to manually decrypt with 1Password or your SSH key"
+        error "Check that you provided the correct private key"
         return 1
     fi
 }

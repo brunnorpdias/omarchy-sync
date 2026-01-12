@@ -23,6 +23,11 @@ size_limit_mb = 20
 # path = "/mnt/data"
 # label = "Internal HDD"
 
+[encryption]
+# Age public key for encrypting SSH keys during backup
+# Set during --init command. Do NOT share this key.
+public_key = ""
+
 [machine_specific]
 # Additional configs to treat as machine-specific
 # These are excluded when restoring to a different hostname
@@ -79,6 +84,15 @@ get_remote_url() {
 
 get_size_limit() {
     get_config_value "size_limit_mb" "20"
+}
+
+get_encryption_public_key() {
+    get_config_value "encryption.public_key" ""
+}
+
+set_encryption_public_key() {
+    local pubkey="$1"
+    set_config_value "encryption.public_key" "$pubkey"
 }
 
 get_internal_drives() {

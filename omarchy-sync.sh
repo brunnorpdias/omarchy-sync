@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-VERSION="1.3.4"
+VERSION="1.4.0"
 
 # Determine script location for sourcing modules
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,6 +18,8 @@ LOG_FLAG=false
 LOG_PATH=""
 NO_PROMPT=false
 export NO_PROMPT
+DRY_RUN=false
+export DRY_RUN
 REMAINING_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -45,6 +47,11 @@ while [[ $# -gt 0 ]]; do
   --no-prompt)
     NO_PROMPT=true
     export NO_PROMPT
+    shift
+    ;;
+  --dry-run)
+    DRY_RUN=true
+    export DRY_RUN
     shift
     ;;
   *)
@@ -130,6 +137,8 @@ install_command() {
     echo 'LOG_PATH=""'
     echo 'NO_PROMPT=false'
     echo 'export NO_PROMPT'
+    echo 'DRY_RUN=false'
+    echo 'export DRY_RUN'
     echo 'REMAINING_ARGS=()'
     echo ''
     echo 'while [[ $# -gt 0 ]]; do'
@@ -155,6 +164,11 @@ install_command() {
     echo '        --no-prompt)'
     echo '            NO_PROMPT=true'
     echo '            export NO_PROMPT'
+    echo '            shift'
+    echo '            ;;'
+    echo '        --dry-run)'
+    echo '            DRY_RUN=true'
+    echo '            export DRY_RUN'
     echo '            shift'
     echo '            ;;'
     echo '        *)'
@@ -357,6 +371,7 @@ case "${1:-}" in
 --restore) restore_command ;;
 --verify) verify_command ;;
 --status) status_command ;;
+--reset) reset_command ;;
 --install) install_command ;;
 --version) echo "omarchy-sync v$VERSION" ;;
 --help | *)
@@ -372,6 +387,8 @@ Options:
                   Default: ~/.local/share/omarchy-sync/omarchy-sync.log
   --no-prompt     Run without interactive prompts (for cron/scripts)
                   Only backs up to local + configured internal drives
+  --dry-run       Show what would be changed without making changes
+                  Works with --backup and --restore
 
 Commands:
   --init      First-time setup or clone from existing remote
@@ -381,6 +398,7 @@ Commands:
   --restore   Restore from local, cloud, or external drive
   --verify    Verify backup integrity using checksums
   --status    Show backup status across all locations
+  --reset     DELETE ALL BACKUPS and start fresh (requires confirmation)
   --install   Install to ~/.local/bin/omarchy-sync
   --version   Show version
   --help      Show this help
@@ -392,6 +410,8 @@ Examples:
   omarchy-sync --test --restore       # Test restore to temp location
   omarchy-sync --log --backup         # Backup with logging
   omarchy-sync --no-prompt --backup   # Backup without prompts (cron)
+  omarchy-sync --dry-run --backup     # Preview what would be backed up
+  omarchy-sync --dry-run --restore    # Preview what would be restored
 EOF
   ;;
 esac

@@ -6,15 +6,23 @@ restore_symlinks() {
 
     [[ ! -f "$source/.symlinks" ]] && return 0
 
-    log "Restoring symlinks..."
-    local restored=0 failed=0
+    log "Restoring symlinks from manifest..."
+    local restored=0 failed=0 skipped=0
 
     while IFS='|' read -r relpath link_target; do
         [[ -z "$relpath" ]] && continue
         local fullpath="$HOME/${relpath#./}"
 
-        # Only restore if it's currently a regular file (was converted from symlink)
-        if [[ -f "$fullpath" && ! -L "$fullpath" ]]; then
+        # Case 1: File doesn't exist - create symlink
+        if [[ ! -e "$fullpath" && ! -L "$fullpath" ]]; then
+            if ln -s "$link_target" "$fullpath" 2>/dev/null; then
+                ((restored++))
+            else
+                warn "Failed to create symlink: $fullpath -> $link_target"
+                ((failed++))
+            fi
+        # Case 2: Regular file exists - convert to symlink
+        elif [[ -f "$fullpath" && ! -L "$fullpath" ]]; then
             rm "$fullpath"
             if ln -s "$link_target" "$fullpath" 2>/dev/null; then
                 ((restored++))
@@ -22,13 +30,27 @@ restore_symlinks() {
                 warn "Failed to create symlink: $fullpath -> $link_target"
                 ((failed++))
             fi
+        # Case 3: Already a symlink - verify or update
         elif [[ -L "$fullpath" ]]; then
-            # Already a symlink, skip
-            :
+            local current_target
+            current_target=$(readlink "$fullpath")
+            if [[ "$current_target" == "$link_target" ]]; then
+                ((skipped++))
+            else
+                # Target changed, update symlink
+                rm "$fullpath"
+                if ln -s "$link_target" "$fullpath" 2>/dev/null; then
+                    ((restored++))
+                else
+                    warn "Failed to update symlink: $fullpath -> $link_target"
+                    ((failed++))
+                fi
+            fi
         fi
     done <"$source/.symlinks"
 
     [[ "$restored" -gt 0 ]] && log "Restored $restored symlink(s)"
+    [[ "$skipped" -gt 0 ]] && log "Verified $skipped symlink(s) already correct"
     [[ "$failed" -gt 0 ]] && warn "$failed symlink(s) could not be restored"
 }
 
@@ -326,6 +348,13 @@ restore_command() {
     [[ "$update_count" -gt 20 ]] && echo "... and approximately $((update_count - 20)) more files"
 
     echo ""
+
+    # If dry-run, show preview and exit without restoring
+    if [[ "${DRY_RUN:-false}" == true ]]; then
+        echo "[*] Dry-run complete. No files were changed."
+        exit 0
+    fi
+
     read -rp "Proceed with restore? (y/N): " confirm
     [[ $confirm != [yY] ]] && {
         echo "Aborted."

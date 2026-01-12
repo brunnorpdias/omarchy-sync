@@ -3,8 +3,8 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(dirname "$(realpath "$0")")"
-source "$SCRIPT_DIR/setup.sh"
+TESTS_DIR="$(dirname "$(realpath "$0")")"
+source "$TESTS_DIR/setup.sh"
 
 # Test counters
 TOTAL_PASSED=0
@@ -19,7 +19,7 @@ echo ""
 # Run integration tests first
 echo "Running Integration Tests..."
 echo "=========================================="
-if "$SCRIPT_DIR/run-tests.sh"; then
+if bash "$TESTS_DIR/run-tests.sh"; then
     echo ""
     echo "Integration tests: PASSED"
 else
@@ -31,7 +31,7 @@ echo ""
 echo "=========================================="
 echo "Running Unit Tests..."
 echo "=========================================="
-if "$SCRIPT_DIR/unit/run-unit-tests.sh"; then
+if bash "$TESTS_DIR/unit/run-unit-tests.sh"; then
     echo ""
     echo "Unit tests: PASSED"
 else
@@ -43,7 +43,7 @@ echo ""
 echo "=========================================="
 echo "Running Filesystem Tests..."
 echo "=========================================="
-if "$SCRIPT_DIR/test-filesystems.sh"; then
+if bash "$TESTS_DIR/test-filesystems.sh"; then
     echo ""
     echo "Filesystem tests: PASSED"
 else
@@ -55,7 +55,7 @@ echo ""
 echo "=========================================="
 echo "Running Symlink Tests..."
 echo "=========================================="
-if "$SCRIPT_DIR/test-symlinks.sh"; then
+if bash "$TESTS_DIR/test-symlinks.sh"; then
     echo ""
     echo "Symlink tests: PASSED"
 else
@@ -67,7 +67,7 @@ echo ""
 echo "=========================================="
 echo "Running Cross-Machine Tests..."
 echo "=========================================="
-if "$SCRIPT_DIR/test-cross-machine.sh"; then
+if bash "$TESTS_DIR/test-cross-machine.sh"; then
     echo ""
     echo "Cross-machine tests: PASSED"
 else
@@ -79,7 +79,7 @@ echo ""
 echo "=========================================="
 echo "Running Metadata Format Tests..."
 echo "=========================================="
-if "$SCRIPT_DIR/test-metadata-formats.sh"; then
+if bash "$TESTS_DIR/test-metadata-formats.sh"; then
     echo ""
     echo "Metadata format tests: PASSED"
 else
@@ -91,7 +91,7 @@ echo ""
 echo "=========================================="
 echo "Running Secrets Tests..."
 echo "=========================================="
-if "$SCRIPT_DIR/test-secrets.sh"; then
+if bash "$TESTS_DIR/test-secrets.sh"; then
     echo ""
     echo "Secrets tests: PASSED"
 else
@@ -103,7 +103,7 @@ echo ""
 echo "=========================================="
 echo "Running Browser Tests..."
 echo "=========================================="
-if "$SCRIPT_DIR/test-browser.sh"; then
+if bash "$TESTS_DIR/test-browser.sh"; then
     echo ""
     echo "Browser tests: PASSED"
 else
@@ -115,7 +115,7 @@ echo ""
 echo "=========================================="
 echo "Running Backup Integration Tests..."
 echo "=========================================="
-if "$SCRIPT_DIR/test-backup-integration.sh"; then
+if bash "$TESTS_DIR/test-backup-integration.sh"; then
     echo ""
     echo "Backup integration tests: PASSED"
 else
@@ -127,7 +127,7 @@ echo ""
 echo "=========================================="
 echo "Running Git Workflow Tests..."
 echo "=========================================="
-if "$SCRIPT_DIR/test-git-workflow.sh"; then
+if bash "$TESTS_DIR/test-git-workflow.sh"; then
     echo ""
     echo "Git workflow tests: PASSED"
 else
@@ -139,7 +139,7 @@ echo ""
 echo "=========================================="
 echo "Running Backup Prompt Tests..."
 echo "=========================================="
-if "$SCRIPT_DIR/test-backup-prompts.sh"; then
+if bash "$TESTS_DIR/test-backup-prompts.sh"; then
     echo ""
     echo "Backup prompt tests: PASSED"
 else

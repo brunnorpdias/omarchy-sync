@@ -1,6 +1,79 @@
 #!/bin/bash
 # init.sh - Initialization, configuration view/modify, and status commands
 
+setup_encryption_key() {
+    echo ""
+    log "Encryption key setup for secrets backup..."
+    echo ""
+
+    local generate_key
+    generate_key=$(prompt "Generate new age encryption key? (Y/n): " "y")
+
+    if [[ "$generate_key" =~ ^[yY]$ ]]; then
+        # Generate new age key
+        log "Generating new age encryption key..."
+
+        if ! command -v age-keygen &>/dev/null; then
+            error "age-keygen not installed. Install with: sudo pacman -S age"
+            exit 1
+        fi
+
+        # Generate key, capture output
+        local keygen_output
+        keygen_output=$(age-keygen 2>&1)
+
+        # Extract public key (format: "# public key: age1...")
+        local public_key
+        public_key=$(echo "$keygen_output" | grep "^# public key:" | cut -d' ' -f4)
+
+        # Extract private key (format: "AGE-SECRET-KEY-1...")
+        local private_key
+        private_key=$(echo "$keygen_output" | grep "^AGE-SECRET-KEY-")
+
+        if [[ -z "$public_key" ]] || [[ -z "$private_key" ]]; then
+            error "Failed to generate age key"
+            exit 1
+        fi
+
+        # Save public key to config
+        set_encryption_public_key "$public_key"
+        log "Public key saved to config."
+
+        # Show private key ONCE - user must save it
+        echo ""
+        echo "=========================================="
+        echo "⚠️  SAVE YOUR ENCRYPTION PRIVATE KEY  ⚠️"
+        echo "=========================================="
+        echo ""
+        echo "This key will be shown ONLY ONCE."
+        echo "Save it in your password manager (1Password, Bitwarden, etc.)"
+        echo "You will need it to restore your backup."
+        echo ""
+        echo "Private key:"
+        echo ""
+        echo "$private_key"
+        echo ""
+        echo "=========================================="
+        echo ""
+        read -rp "Press Enter after saving the key to continue..."
+
+    else
+        # Manual key import
+        local existing_pubkey
+        read -rp "Enter your age public key (age1...): " existing_pubkey
+
+        if [[ ! "$existing_pubkey" =~ ^age1[a-z0-9]{58}$ ]]; then
+            error "Invalid age public key format. Must start with 'age1' and be 62 characters."
+            exit 1
+        fi
+
+        set_encryption_public_key "$existing_pubkey"
+        log "Public key saved to config."
+    fi
+
+    echo ""
+}
+
 init_command() {
     echo "--- Omarchy Sync: Setup ---"
     echo ""
@@ -55,6 +128,9 @@ init_command() {
         set_config_value "path" "$local_path"
         set_config_value "url" "$remote_url"
 
+        # Setup encryption key
+        setup_encryption_key
+
         local backup_host
         backup_host=$(get_metadata_field "$local_path" "hostname")
         local backup_ts
@@ -104,6 +180,9 @@ init_command() {
         set_config_value "path" "$local_path"
         [[ -n "$remote_url" ]] && set_config_value "url" "$remote_url"
 
+        # Setup encryption key
+        setup_encryption_key
+
         # Create backup directory and init git
         mkdir -p "$local_path"
         cd "$local_path" || exit 1
@@ -115,15 +194,28 @@ init_command() {
 
         # Run first backup
         log "Running first backup..."
-        do_backup_to_target "$local_path"
+        if ! do_backup_to_target "$local_path"; then
+            error "Initial backup failed"
+            rm -rf "$local_path"
+            return 1
+        fi
 
         cd "$local_path" || exit 1
         git add -A
-        git_with_signing commit -m "Initial backup: $(date +'%Y-%m-%d %H:%M')"
+        if ! git_with_signing commit -m "Initial backup: $(date +'%Y-%m-%d %H:%M')"; then
+            error "Failed to commit initial backup"
+            error "Check git configuration: git config --list"
+            return 1
+        fi
+        log "Initial backup committed."
 
         if [[ -n "$remote_url" ]]; then
             log "Pushing to remote..."
-            git_with_signing push -u origin HEAD
+            if ! git_with_signing push -u origin HEAD; then
+                error "Failed to push to remote"
+                error "Check authentication: git ls-remote \"$remote_url\""
+                warn "Backup is local only until authentication is fixed"
+            fi
         fi
 
         # Ensure backup directory has proper permissions
@@ -164,17 +256,21 @@ config_command() {
     local size_limit
     size_limit=$(get_size_limit)
 
+    local encryption_pubkey
+    encryption_pubkey=$(get_encryption_public_key)
+
     echo "Current settings:"
     echo "  1. Backup directory: $local_path"
     echo "  2. Remote: ${remote_url:-<not set>}"
     echo "  3. Size limit: ${size_limit}MB"
     echo "  4. Internal drives: $(get_internal_drives | wc -l) configured"
-    echo "  5. View config file"
-    echo "  6. Exit"
+    echo "  5. Encryption key: $(echo "${encryption_pubkey:0:20}..." | sed 's/\.\.\.$//')"
+    echo "  6. View config file"
+    echo "  7. Exit"
     echo ""
 
     local choice
-    read -rp "What would you like to change? (1-6): " choice
+    read -rp "What would you like to change? (1-7): " choice
 
     case "$choice" in
     1)
@@ -223,9 +319,29 @@ config_command() {
         ;;
     5)
         echo ""
-        cat "$CONFIG_FILE"
+        echo "Current encryption public key:"
+        if [[ -n "$encryption_pubkey" ]]; then
+            echo "  $encryption_pubkey"
+        else
+            echo "  <not set>"
+        fi
+        echo ""
+        local new_key
+        read -rp "New age public key (or Enter to keep current): " new_key
+        if [[ -n "$new_key" ]]; then
+            if [[ ! "$new_key" =~ ^age1[a-z0-9]{58}$ ]]; then
+                error "Invalid age public key format. Must start with 'age1' and be 62 characters."
+            else
+                set_encryption_public_key "$new_key"
+                log "Encryption key updated"
+            fi
+        fi
         ;;
     6)
+        echo ""
+        cat "$CONFIG_FILE"
+        ;;
+    7)
         exit 0
         ;;
     *)
@@ -326,4 +442,68 @@ status_command() {
     else
         echo "  (none detected)"
     fi
+}
+
+reset_command() {
+    echo "--- Omarchy Sync: Reset ---"
+    echo ""
+
+    if ! config_exists; then
+        error "Not initialized. Run 'omarchy-sync --init' first."
+        exit 1
+    fi
+
+    local local_path
+    local_path=$(get_local_path)
+
+    # Show strong warning
+    echo ""
+    echo "=========================================="
+    echo "⚠️  WARNING: THIS WILL DELETE ALL BACKUPS ⚠️"
+    echo "=========================================="
+    echo ""
+    echo "This will PERMANENTLY DELETE:"
+    echo "  - All backup data at: $local_path"
+    echo "  - Git history"
+    echo "  - All symlink manifests and metadata"
+    echo ""
+    echo "This action CANNOT be undone."
+    echo ""
+
+    # Require explicit confirmation
+    local confirm1
+    confirm1=$(prompt "Type 'delete all backups' to confirm: " "")
+
+    if [[ "$confirm1" != "delete all backups" ]]; then
+        echo "Reset cancelled."
+        exit 0
+    fi
+
+    echo ""
+    local confirm2
+    confirm2=$(prompt "Are you absolutely sure? Type 'yes' to proceed: " "")
+
+    if [[ "$confirm2" != "yes" ]]; then
+        echo "Reset cancelled."
+        exit 0
+    fi
+
+    echo ""
+    log "Deleting backup directory..."
+    rm -rf "$local_path"
+
+    log "Recreating backup directory..."
+    mkdir -p "$local_path"
+    cd "$local_path" || exit 1
+    git init
+
+    local remote_url
+    remote_url=$(get_remote_url)
+    if [[ -n "$remote_url" ]]; then
+        git remote add origin "$remote_url"
+    fi
+
+    echo ""
+    done_ "Backup reset complete. All previous backups deleted."
+    log "Run 'omarchy-sync --backup' to create a new backup."
 }

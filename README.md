@@ -171,13 +171,57 @@ Your system has: `~/.local/bin/claude` → symlink to `~/.local/share/claude/ver
 
 This ensures your system never receives corrupted 220MB binary files in place of symlinks, and you have clear visibility into potential limitations.
 
-## SSH Key Encryption
+## SSH Key Encryption (v1.4.0+)
 
-SSH keys are encrypted using `age` with your SSH public key, making it compatible with 1Password SSH agent for decryption.
+SSH keys are encrypted using **age** with **dedicated encryption keys** (not Git SSH keys).
 
-Requirements:
+### Setup
+
+During `--init`, you'll be asked:
+
+```
+Generate new age encryption key? (Y/n):
+```
+
+- **Yes (recommended)**: System generates a new age key pair
+  - Public key automatically saved in config
+  - **Private key shown ONCE** - save it in your password manager (1Password, Bitwarden, etc.)
+  - You'll need it when restoring
+
+- **No (power users)**: Provide your existing age public key
+  - Useful if you already have age keys
+
+### Restore
+
+During `--restore`, when SSH keys are in the backup:
+
+```
+Enter the path to your age private key file:
+```
+
+- Provide the path to your saved private key
+- Or save the key to a temporary file and provide that path
+
+### Why Dedicated Encryption Keys?
+
+- **Security**: Separates authentication (Git SSH) from encryption
+- **Best Practice**: Different keys for different purposes
+- **Flexibility**: Can rotate encryption keys without affecting Git access
+- **age Native**: Uses age's native key format (more efficient than SSH keys)
+
+### BREAKING CHANGE: v1.4.0
+
+**v1.4.0 is NOT backward compatible with v1.3.x backups!**
+
+- Old backups encrypted with SSH keys cannot be restored with v1.4.0+
+- If you have old backups using v1.3.x: Keep the v1.3.x binary to restore them
+- After restoring, run `omarchy-sync --init` with v1.4.0 to set up dedicated encryption keys
+- Create new backups with `--backup`
+
+### Requirements
+
 - Install `age`: `pacman -S age`
-- Have an SSH key pair (`~/.ssh/id_ed25519` or `~/.ssh/id_rsa`)
+- Generate or import age encryption keys during `--init`
 
 ## New Machine Setup
 

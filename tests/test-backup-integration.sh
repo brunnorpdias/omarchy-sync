@@ -19,7 +19,10 @@ test_backup_creates_directory_structure() {
     create_test_env
 
     # Initialize in isolated environment
-    printf 'n\n\n\n' | run_isolated --init 2>&1 || true
+    if ! printf 'n\n\n\n' | run_isolated --init 2>&1; then
+        log_fail "init failed with error output above"
+        return 1
+    fi
 
     local backup_path
     backup_path=$(get_backup_path)
@@ -38,13 +41,19 @@ test_backup_creates_directory_structure() {
 
 test_backup_copies_config_files() {
     create_test_env
-    printf 'n\n\n\n' | run_isolated --init 2>&1 || true
+    if ! printf 'n\n\n\n' | run_isolated --init 2>&1; then
+        log_fail "init failed"
+        return 1
+    fi
 
     # Create test config files
     echo "test config content" > "$TEST_HOME/.config/small-app/custom.conf"
 
     # Run backup
-    printf 'n\nn\n' | run_isolated --backup 2>&1 || true
+    if ! printf 'n\nn\n' | run_isolated --backup 2>&1; then
+        log_fail "backup failed"
+        return 1
+    fi
 
     local backup_path
     backup_path=$(get_backup_path)
@@ -62,8 +71,14 @@ test_backup_copies_config_files() {
 
 test_backup_creates_metadata() {
     create_test_env
-    printf 'n\n\n\n' | run_isolated --init 2>&1 || true
-    printf 'n\nn\n' | run_isolated --backup 2>&1 || true
+    if ! printf 'n\n\n\n' | run_isolated --init 2>&1; then
+        log_fail "init failed"
+        return 1
+    fi
+    if ! printf 'n\nn\n' | run_isolated --backup 2>&1; then
+        log_fail "backup failed"
+        return 1
+    fi
 
     local backup_path
     backup_path=$(get_backup_path)
@@ -84,8 +99,14 @@ test_backup_creates_metadata() {
 
 test_backup_copies_packages_list() {
     create_test_env
-    printf 'n\n\n\n' | run_isolated --init 2>&1 || true
-    printf 'n\nn\n' | run_isolated --backup 2>&1 || true
+    if ! printf 'n\n\n\n' | run_isolated --init 2>&1; then
+        log_fail "init failed"
+        return 1
+    fi
+    if ! printf 'n\nn\n' | run_isolated --backup 2>&1; then
+        log_fail "backup failed"
+        return 1
+    fi
 
     local backup_path
     backup_path=$(get_backup_path)
@@ -101,13 +122,19 @@ test_backup_copies_packages_list() {
 
 test_backup_excludes_large_files() {
     create_test_env
-    printf 'n\n\n\n' | run_isolated --init 2>&1 || true
+    if ! printf 'n\n\n\n' | run_isolated --init 2>&1; then
+        log_fail "init failed"
+        return 1
+    fi
 
     local backup_path
     backup_path=$(get_backup_path)
 
     # large-app was created with 25MB file in setup
-    printf 'n\nn\n' | run_isolated --backup 2>&1 || true
+    if ! printf 'n\nn\n' | run_isolated --backup 2>&1; then
+        log_fail "backup failed"
+        return 1
+    fi
 
     # Verify large file NOT in backup
     if assert_file_not_exists "$backup_path/config/large-app/bigfile" "Large file should NOT be backed up"; then
@@ -128,8 +155,14 @@ test_backup_records_symlinks() {
     ln -s /usr/bin/bash "$TEST_HOME/.local/bin/my-bash"
     ln -s /usr/share/doc "$TEST_HOME/.config/doc-link"
 
-    printf 'n\n\n\n' | run_isolated --init 2>&1 || true
-    printf 'n\nn\n' | run_isolated --backup 2>&1 || true
+    if ! printf 'n\n\n\n' | run_isolated --init 2>&1; then
+        log_fail "init failed"
+        return 1
+    fi
+    if ! printf 'n\nn\n' | run_isolated --backup 2>&1; then
+        log_fail "backup failed"
+        return 1
+    fi
 
     local backup_path
     backup_path=$(get_backup_path)
@@ -147,8 +180,14 @@ test_backup_records_symlinks() {
 
 test_backup_creates_git_repo() {
     create_test_env
-    printf 'n\n\n\n' | run_isolated --init 2>&1 || true
-    printf 'n\nn\n' | run_isolated --backup 2>&1 || true
+    if ! printf 'n\n\n\n' | run_isolated --init 2>&1; then
+        log_fail "init failed"
+        return 1
+    fi
+    if ! printf 'n\nn\n' | run_isolated --backup 2>&1; then
+        log_fail "backup failed"
+        return 1
+    fi
 
     local backup_path
     backup_path=$(get_backup_path)
@@ -170,8 +209,14 @@ test_backup_creates_git_repo() {
 
 test_restore_after_backup() {
     create_test_env
-    printf 'n\n\n\n' | run_isolated --init 2>&1 || true
-    printf 'n\nn\n' | run_isolated --backup 2>&1 || true
+    if ! printf 'n\n\n\n' | run_isolated --init 2>&1; then
+        log_fail "init failed"
+        return 1
+    fi
+    if ! printf 'n\nn\n' | run_isolated --backup 2>&1; then
+        log_fail "backup failed"
+        return 1
+    fi
 
     local backup_path
     backup_path=$(get_backup_path)
@@ -183,10 +228,10 @@ test_restore_after_backup() {
         return 1
     }
 
-    # Now restore
-    printf '1\nn\n' | run_isolated --restore 2>&1 || true
+    # Now restore (input: '1'=source, empty=confirm components, 'y'=proceed)
+    printf '1\n\ny\n' | run_isolated --restore >/dev/null 2>&1 || true
 
-    # Verify file was restored
+    # Verify file was actually restored (that's the real test)
     if assert_file_exists "$TEST_HOME/.config/small-app/config.txt" "Config file should be restored"; then
         if assert_file_contains "$TEST_HOME/.config/small-app/config.txt" "small config" "Restored content should match"; then
             return 0
@@ -200,8 +245,14 @@ test_restore_recreates_symlinks() {
 
     # Create and backup symlinks
     ln -s /usr/bin/bash "$TEST_HOME/.local/bin/my-bash"
-    printf 'n\n\n\n' | run_isolated --init 2>&1 || true
-    printf 'n\nn\n' | run_isolated --backup 2>&1 || true
+    if ! printf 'n\n\n\n' | run_isolated --init 2>&1; then
+        log_fail "init failed"
+        return 1
+    fi
+    if ! printf 'n\nn\n' | run_isolated --backup 2>&1; then
+        log_fail "backup failed"
+        return 1
+    fi
 
     # Convert symlink to regular file (simulate exFAT behavior)
     rm "$TEST_HOME/.local/bin/my-bash"
@@ -213,10 +264,10 @@ test_restore_recreates_symlinks() {
         return 1
     fi
 
-    # Restore - symlink should be recreated
-    printf '1\nn\n' | run_isolated --restore 2>&1 || true
+    # Restore - symlink should be recreated (input: '1'=source, empty=confirm, 'y'=proceed)
+    printf '1\n\ny\n' | run_isolated --restore >/dev/null 2>&1 || true
 
-    # Verify symlink is restored
+    # Verify symlink is restored from manifest
     if [[ -L "$TEST_HOME/.local/bin/my-bash" ]]; then
         return 0
     else
@@ -227,10 +278,16 @@ test_restore_recreates_symlinks() {
 
 test_backup_respects_excludes_on_restore() {
     create_test_env
-    printf 'n\n\n\n' | run_isolated --init 2>&1 || true
+    if ! printf 'n\n\n\n' | run_isolated --init 2>&1; then
+        log_fail "init failed"
+        return 1
+    fi
 
     # Backup with large app excluded
-    printf 'n\nn\n' | run_isolated --backup 2>&1 || true
+    if ! printf 'n\nn\n' | run_isolated --backup 2>&1; then
+        log_fail "backup failed"
+        return 1
+    fi
 
     local backup_path
     backup_path=$(get_backup_path)
@@ -244,10 +301,10 @@ test_backup_respects_excludes_on_restore() {
     # Remove large-app from home to test restore
     rm -rf "$TEST_HOME/.config/large-app"
 
-    # Restore - large-app should NOT be restored because it's in excludes
-    printf '1\nn\n' | run_isolated --restore 2>&1 || true
+    # Restore - large-app should NOT be restored because it's in excludes (input: '1'=source, empty=confirm, 'y'=proceed)
+    printf '1\n\ny\n' | run_isolated --restore >/dev/null 2>&1 || true
 
-    # Verify large-app was NOT restored
+    # Verify large-app was NOT restored (excluded files should not come back)
     if [[ ! -d "$TEST_HOME/.config/large-app" ]]; then
         return 0
     else
@@ -258,8 +315,14 @@ test_backup_respects_excludes_on_restore() {
 
 test_backup_copies_local_bin() {
     create_test_env
-    printf 'n\n\n\n' | run_isolated --init 2>&1 || true
-    printf 'n\nn\n' | run_isolated --backup 2>&1 || true
+    if ! printf 'n\n\n\n' | run_isolated --init 2>&1; then
+        log_fail "init failed"
+        return 1
+    fi
+    if ! printf 'n\nn\n' | run_isolated --backup 2>&1; then
+        log_fail "backup failed"
+        return 1
+    fi
 
     local backup_path
     backup_path=$(get_backup_path)
@@ -275,8 +338,14 @@ test_backup_copies_local_bin() {
 
 test_backup_copies_applications() {
     create_test_env
-    printf 'n\n\n\n' | run_isolated --init 2>&1 || true
-    printf 'n\nn\n' | run_isolated --backup 2>&1 || true
+    if ! printf 'n\n\n\n' | run_isolated --init 2>&1; then
+        log_fail "init failed"
+        return 1
+    fi
+    if ! printf 'n\nn\n' | run_isolated --backup 2>&1; then
+        log_fail "backup failed"
+        return 1
+    fi
 
     local backup_path
     backup_path=$(get_backup_path)
