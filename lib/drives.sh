@@ -7,20 +7,18 @@ get_safe_drives() {
     root_dev=$(findmnt -n -o SOURCE / | sed 's/\[.*\]//')
 
     # Use mapfile to avoid subshell variable loss
+    # Use pipe delimiter to handle empty fields and spaces correctly
     local lines=()
-    mapfile -t lines < <(lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL -p -n -r 2>/dev/null)
+    mapfile -t lines < <(lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL -p -n -P 2>/dev/null)
 
     for line in "${lines[@]}"; do
-        # Split with read for space-delimited lsblk output
-        read -r name size fstype mountpoint label <<< "$line"
+        # Parse KEY="VALUE" format from lsblk -P output
+        local name="" size="" fstype="" mountpoint="" label=""
+        eval "$(echo "$line" | sed 's/NAME=/name=/; s/SIZE=/size=/; s/FSTYPE=/fstype=/; s/MOUNTPOINT=/mountpoint=/; s/LABEL=/label=/')"
 
         # Skip if empty name or not a partition
         [[ -z "$name" ]] && continue
         [[ ! "$name" =~ [0-9]$ ]] && continue # Skip whole disks, only partitions
-
-        # Unescape lsblk -r output (converts \x20 to spaces, etc.)
-        mountpoint=$(printf '%b' "$mountpoint")
-        label=$(printf '%b' "$label")
 
         # Skip system partitions
         [[ "$name" == "$root_dev" ]] && continue
@@ -30,6 +28,7 @@ get_safe_drives() {
         [[ "$fstype" == "ntfs" ]] && continue
         [[ "$fstype" == "swap" ]] && continue
         [[ "$fstype" == "crypto_LUKS" ]] && continue
+        [[ "$fstype" == "vfat" ]] && continue  # Skip FAT (typically EFI/boot partitions)
         [[ -z "$fstype" ]] && continue
 
         # Skip EFI/system partitions by label
@@ -104,7 +103,7 @@ mount_drive() {
         return 0
     fi
 
-    log "Mounting $device..."
+    echo "[*] Mounting $device..." >&2
     local mountpoint
     mountpoint=$(udisksctl mount -b "$device" --no-user-interaction 2>/dev/null | grep -oP "at \K.*") || {
         error "Failed to mount $device"

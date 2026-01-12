@@ -142,9 +142,9 @@ test_restore_preview() {
     # Test: --restore shows dry-run preview
     printf 'n\n\n\n' | run_omarchy --init 2>&1 || true
 
-    # Select source 1 (local) and abort (n)
+    # Select source 1 (local), confirm component selection (Enter), and abort (n)
     local output
-    output=$(printf '1\nn\n' | run_omarchy --restore 2>&1)
+    output=$(printf '1\n\nn\n' | run_omarchy --restore 2>&1)
 
     echo "$output" | grep -q "Available restore sources:" || { log_fail "Restore should list sources"; return 1; }
     echo "$output" | grep -q "Local" || { log_fail "Restore should show local source"; return 1; }

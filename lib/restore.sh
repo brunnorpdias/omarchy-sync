@@ -1,6 +1,113 @@
 #!/bin/bash
 # restore.sh - Restore functionality
 
+restore_browser_data() {
+    local source="$1"
+
+    [[ ! -d "$source/browser" ]] && return 0
+
+    for browser_dir in "$source/browser"/*; do
+        [[ ! -d "$browser_dir" ]] && continue
+
+        local browser_name
+        browser_name=$(basename "$browser_dir")
+        local target_dir="$HOME/.config/$browser_name/Default"
+
+        if [[ ! -d "$target_dir" ]]; then
+            warn "Browser profile not found: $target_dir - skipping"
+            continue
+        fi
+
+        log "Restoring $browser_name data..."
+
+        # Restore portable files
+        for item in "Bookmarks" "Preferences" "History"; do
+            if [[ -f "$browser_dir/$item" ]]; then
+                [[ -f "$target_dir/$item" ]] && mv "$target_dir/$item" "$target_dir/$item.backup"
+                cp "$browser_dir/$item" "$target_dir/"
+            fi
+        done
+
+        # Restore extension settings
+        for dir in "Local Extension Settings" "Sync Extension Settings" "Managed Extension Settings"; do
+            [[ -d "$browser_dir/$dir" ]] && \
+                rsync -aq "$browser_dir/$dir/" "$target_dir/$dir/"
+        done
+
+        # Show extension list for user to reinstall
+        if [[ -f "$browser_dir/extensions.txt" ]]; then
+            echo ""
+            log "Extensions to reinstall (click to open Chrome Web Store):"
+            grep "|" "$browser_dir/extensions.txt" | while IFS='|' read -r name id version; do
+                name=$(echo "$name" | xargs)  # trim whitespace
+                id=$(echo "$id" | xargs)
+                version=$(echo "$version" | xargs)
+                local url="https://chromewebstore.google.com/detail/$id"
+                # OSC 8 hyperlink: \e]8;;URL\e\\TEXT\e]8;;\e\\
+                echo -e "  - \e]8;;${url}\e\\${name} (v${version})\e]8;;\e\\"
+            done
+        fi
+    done
+}
+
+# Component selection for restore
+select_restore_components() {
+    # Components: 1=configs, 2=packages, 3=local_bin, 4=system, 5=dconf, 6=shell, 7=ssh, 8=browser
+    local -A selected=([1]=1 [3]=1 [4]=1 [5]=1 [6]=1 [8]=1)  # Default: all except packages and SSH
+    local -a labels=(
+        "Configs (~/.config)"
+        "Packages (repo + AUR)"
+        "Local bin (~/.local/bin)"
+        "System files (pacman.conf, hosts)"
+        "Desktop settings (dconf)"
+        "Shell configs (.zshrc, etc.)"
+        "SSH keys (encrypted)"
+        "Browser data (Chrome/Chromium)"
+    )
+
+    display_components() {
+        echo ""
+        log "Select components to restore:"
+        for i in {1..8}; do
+            local mark=" "
+            [[ -n "${selected[$i]:-}" ]] && mark="x"
+            echo "  $i. [$mark] ${labels[$((i-1))]}"
+        done
+        echo ""
+        echo "Toggle with numbers (1-8), 'a' for all, 'n' for none, Enter to confirm"
+    }
+
+    display_components
+
+    while true; do
+        read -rp "Toggle: " choice
+        case "$choice" in
+            [1-8])
+                if [[ -n "${selected[$choice]:-}" ]]; then
+                    unset "selected[$choice]"
+                else
+                    selected[$choice]=1
+                fi
+                display_components
+                ;;
+            a)
+                for i in {1..8}; do selected[$i]=1; done
+                display_components
+                ;;
+            n)
+                selected=()
+                display_components
+                ;;
+            "")
+                break
+                ;;
+        esac
+    done
+
+    # Return selected indices
+    echo "${!selected[*]}"
+}
+
 restore_command() {
     echo "--- Omarchy Sync: Restore ---"
 
@@ -108,9 +215,12 @@ restore_command() {
     backup_host=$(get_metadata_field "$restore_path" "hostname")
     local current_host
     current_host=$(hostname)
+    local is_cross_machine=false
     if [[ "$backup_host" != "unknown" ]] && [[ "$backup_host" != "$current_host" ]]; then
+        is_cross_machine=true
         echo ""
         log "WARNING: This backup is from '$backup_host', you're on '$current_host'."
+        log "Machine-specific configs will be excluded automatically."
         local host_confirm
         host_confirm=$(prompt "Continue anyway? (y/N): " "n")
         [[ ! "$host_confirm" =~ ^[yY]$ ]] && {
@@ -119,24 +229,40 @@ restore_command() {
         }
     fi
 
+    # Component selection
+    local components
+    components=$(select_restore_components)
+    if [[ -z "$components" ]]; then
+        echo "No components selected. Aborted."
+        exit 0
+    fi
+
     # Build exclude list from .restore-excludes
-    # The file contains full paths like /home/user/.config/large-app
-    # We need to convert them to paths relative to the backup's config/ dir
+    # The file contains HOME-relative paths like .config/chromium
     local excludes=()
     if [[ -f "$restore_path/.restore-excludes" ]]; then
         log "Loading exclude list..."
-        while IFS= read -r fullpath; do
-            [[ -z "$fullpath" ]] && continue
-            # Extract the relative path from $HOME/.config/
-            local relpath="${fullpath#$HOME/.config/}"
-            # If it didn't change, it might be a .git path inside a subdir
-            if [[ "$relpath" == "$fullpath" ]]; then
-                # Try to extract relative to .config for nested .git dirs
-                relpath="${fullpath##*/.config/}"
-            fi
-            excludes+=(--exclude="$relpath")
-            log "  Will preserve: $fullpath"
+        while IFS= read -r relpath; do
+            [[ -z "$relpath" ]] && continue
+            # Paths are HOME-relative (e.g., .config/chromium)
+            # For rsync excludes, we need path relative to config/ (e.g., chromium)
+            local config_relpath="${relpath#.config/}"
+            excludes+=(--exclude="$config_relpath")
+            log "  Will preserve: ~/$relpath"
         done <"$restore_path/.restore-excludes"
+    fi
+
+    # Add machine-specific exclusions for cross-machine restore
+    if [[ "$is_cross_machine" == true ]] && [[ -f "$restore_path/.machine-specific" ]]; then
+        log "Excluding machine-specific configs..."
+        while IFS= read -r relpath; do
+            [[ -z "$relpath" ]] && continue
+            # Paths are HOME-relative (e.g., .config/hypr/monitors.conf)
+            # For rsync excludes, we need path relative to config/ (e.g., hypr/monitors.conf)
+            local config_relpath="${relpath#.config/}"
+            excludes+=(--exclude="$config_relpath")
+            log "  Excluding: ~/$relpath"
+        done < "$restore_path/.machine-specific"
     fi
 
     # Dry run preview
@@ -175,35 +301,65 @@ restore_command() {
         exit 0
     }
 
-    # Restore configs
-    log "Restoring ~/.config..."
-    rsync -aq --delete "${excludes[@]}" "$restore_path/config/" "$HOME/.config/"
+    # Component 1: Restore configs (~/.config)
+    if [[ "$components" == *1* ]]; then
+        log "Restoring ~/.config..."
+        mkdir -p "$HOME/.config"
+        rsync -aq --delete "${excludes[@]}" "$restore_path/config/" "$HOME/.config/"
 
-    log "Restoring local data..."
-    rsync -aq --delete --exclude='.git' --delete-excluded "$restore_path/local_share/applications/" "$HOME/.local/share/applications/"
-    [[ -d "$restore_path/bin" ]] && rsync -aq --delete --exclude='.git' --delete-excluded "$restore_path/bin/" "$HOME/.local/bin/"
-
-    # Restore system configs
-    if [[ -f "$restore_path/etc/pacman.conf" ]]; then
-        log "Restoring /etc/pacman.conf..."
-        sudo cp "$restore_path/etc/pacman.conf" /etc/pacman.conf
-    fi
-    if [[ -f "$restore_path/etc/hosts" ]]; then
-        log "Restoring /etc/hosts..."
-        sudo cp "$restore_path/etc/hosts" /etc/hosts
+        log "Restoring local data..."
+        mkdir -p "$HOME/.local/share/applications"
+        rsync -aq --delete --exclude='.git' --delete-excluded "$restore_path/local_share/applications/" "$HOME/.local/share/applications/"
     fi
 
-    # Restore dconf
-    if [[ -f "$restore_path/dconf_settings.ini" ]] && command -v dconf &>/dev/null; then
-        log "Loading dconf settings..."
-        dconf load / <"$restore_path/dconf_settings.ini" || true
+    # Component 3: Restore local bin
+    if [[ "$components" == *3* ]] && [[ -d "$restore_path/bin" ]]; then
+        log "Restoring ~/.local/bin..."
+        mkdir -p "$HOME/.local/bin"
+        rsync -aq --delete --exclude='.git' --delete-excluded "$restore_path/bin/" "$HOME/.local/bin/"
     fi
 
-    # Reinstall packages
-    echo ""
-    local pkg_confirm
-    pkg_confirm=$(prompt "Reinstall packages? (y/N): " "n")
-    if [[ "$pkg_confirm" =~ ^[yY]$ ]]; then
+    # Component 4: Restore system configs
+    if [[ "$components" == *4* ]]; then
+        if [[ -f "$restore_path/etc/pacman.conf" ]]; then
+            log "Restoring /etc/pacman.conf..."
+            sudo cp "$restore_path/etc/pacman.conf" /etc/pacman.conf
+        fi
+        if [[ -f "$restore_path/etc/hosts" ]]; then
+            log "Restoring /etc/hosts..."
+            sudo cp "$restore_path/etc/hosts" /etc/hosts
+        fi
+    fi
+
+    # Component 5: Restore dconf
+    if [[ "$components" == *5* ]]; then
+        if [[ -f "$restore_path/dconf_settings.ini" ]] && command -v dconf &>/dev/null; then
+            log "Loading dconf settings..."
+            dconf load / <"$restore_path/dconf_settings.ini" || true
+        fi
+    fi
+
+    # Component 6: Restore shell configs
+    if [[ "$components" == *6* ]] && [[ -d "$restore_path/shell" ]]; then
+        log "Restoring shell configs..."
+        for rc in "$restore_path/shell/"*; do
+            [[ -f "$rc" ]] && cp "$rc" "$HOME/"
+        done
+    fi
+
+    # Component 7: Restore SSH keys (encrypted)
+    if [[ "$components" == *7* ]]; then
+        restore_secrets "$restore_path"
+    fi
+
+    # Component 8: Restore browser data (Chrome/Chromium)
+    if [[ "$components" == *8* ]]; then
+        restore_browser_data "$restore_path"
+    fi
+
+    # Component 2: Reinstall packages
+    if [[ "$components" == *2* ]]; then
+        echo ""
         log "Installing repo packages..."
         sudo pacman -S --needed - <"$restore_path/packages/pkglist-repo.txt" || true
 
@@ -221,4 +377,5 @@ restore_command() {
 
     echo ""
     done_ "Restore complete. Reboot recommended."
+    notify "Restore Complete" "Restored from $restore_path"
 }

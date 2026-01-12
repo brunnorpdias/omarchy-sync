@@ -51,6 +51,17 @@ warn() {
     log_write "WARN" "$1"
 }
 
+notify() {
+    local title="$1"
+    local message="$2"
+    local urgency="${3:-normal}"  # low, normal, critical
+
+    if command -v notify-send &>/dev/null; then
+        notify-send -u "$urgency" -a "omarchy-sync" "$title" "$message" 2>/dev/null || true
+    fi
+    log_write "INFO" "NOTIFY: $title - $message"
+}
+
 # ============================================================================
 # Mount tracking for cleanup
 # ============================================================================
@@ -122,4 +133,40 @@ check_dependencies() {
         error "Missing required commands: ${missing[*]}"
         exit 1
     fi
+}
+
+# ============================================================================
+# Git wrapper for 1Password compatibility in test mode
+# ============================================================================
+# When in test mode, HOME is changed which breaks 1Password's socket lookup.
+# This wrapper temporarily restores HOME for git commands that need signing.
+git_with_signing() {
+    if [[ -n "${ORIGINAL_HOME:-}" ]]; then
+        HOME="$ORIGINAL_HOME" git "$@"
+    else
+        git "$@"
+    fi
+}
+
+# ============================================================================
+# Filesystem helpers
+# ============================================================================
+# Returns rsync options for a given path based on filesystem capabilities
+get_rsync_opts_for_path() {
+    local path="$1"
+    local opts="-aq --delete"
+
+    # Get filesystem type for the path
+    local fstype
+    fstype=$(df --output=fstype "$path" 2>/dev/null | tail -1)
+
+    # Filesystems that don't support symlinks
+    case "$fstype" in
+        exfat|vfat|fat32|ntfs|msdos)
+            opts="$opts --copy-links"
+            log_write "INFO" "Using --copy-links for $fstype filesystem at $path"
+            ;;
+    esac
+
+    echo "$opts"
 }

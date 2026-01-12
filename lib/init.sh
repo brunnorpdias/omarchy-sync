@@ -40,7 +40,7 @@ init_command() {
         log "Authentication successful."
 
         local local_path
-        read -rp "Local backup directory ($DEFAULT_LOCAL_PATH): " local_path
+        read -rp "Local backup directory [Enter for $DEFAULT_LOCAL_PATH]: " local_path
         local_path="${local_path:-$DEFAULT_LOCAL_PATH}"
 
         # Expand ~
@@ -68,7 +68,7 @@ init_command() {
     else
         # Fresh setup
         local local_path
-        read -rp "Local backup directory ($DEFAULT_LOCAL_PATH): " local_path
+        read -rp "Local backup directory [Enter for $DEFAULT_LOCAL_PATH]: " local_path
         local_path="${local_path:-$DEFAULT_LOCAL_PATH}"
         local_path="${local_path/#\~/$HOME}"
 
@@ -105,11 +105,11 @@ init_command() {
 
         cd "$local_path" || exit 1
         git add -A
-        git commit -m "Initial backup: $(date +'%Y-%m-%d %H:%M')"
+        git_with_signing commit -m "Initial backup: $(date +'%Y-%m-%d %H:%M')"
 
         if [[ -n "$remote_url" ]]; then
             log "Pushing to remote..."
-            git push -u origin HEAD
+            git_with_signing push -u origin HEAD
         fi
 
         echo ""
