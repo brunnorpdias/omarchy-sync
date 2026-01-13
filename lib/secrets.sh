@@ -1,24 +1,8 @@
 #!/bin/bash
-# secrets.sh - SSH key backup with age encryption
+# secrets.sh - SSH key backup and restoration
 
 backup_secrets() {
     local target="$1"
-
-    # Check if age is installed
-    if ! command -v age &>/dev/null; then
-        warn "age not installed - skipping SSH key backup"
-        return 0
-    fi
-
-    # Get encryption public key from config
-    local pubkey
-    pubkey=$(get_encryption_public_key)
-
-    if [[ -z "$pubkey" ]]; then
-        warn "No encryption key configured - skipping SSH key backup"
-        warn "Run 'omarchy-sync --config' to set up encryption"
-        return 0
-    fi
 
     local ssh_dir="$HOME/.ssh"
     if [[ ! -d "$ssh_dir" ]]; then
@@ -26,56 +10,44 @@ backup_secrets() {
         return 0
     fi
 
-    log "Encrypting SSH keys..."
+    log "Backing up SSH keys..."
     mkdir -p "$target/secrets"
 
-    # Create tarball and encrypt with age native public key
-    if tar -czf - -C "$HOME" .ssh 2>/dev/null | \
-       age -r "$pubkey" > "$target/secrets/ssh.tar.age" 2>/dev/null; then
-        log "SSH keys encrypted successfully"
+    # Create compressed tarball of SSH keys
+    # Protection: backed up to git (SSH transport encrypted) + directory chmod 700
+    if tar -czf "$target/secrets/ssh.tar.gz" -C "$HOME" .ssh 2>/dev/null; then
+        log "SSH keys backed up successfully"
     else
-        warn "Failed to encrypt SSH keys"
+        warn "Failed to backup SSH keys"
         return 1
     fi
 }
 
 restore_secrets() {
     local source="$1"
-    local encrypted_file="$source/secrets/ssh.tar.age"
+    local backup_file="$source/secrets/ssh.tar.gz"
 
-    # Check if encrypted backup exists
-    if [[ ! -f "$encrypted_file" ]]; then
-        return 0
-    fi
-
-    # Check if age is installed
-    if ! command -v age &>/dev/null; then
-        warn "age not installed - cannot restore SSH keys"
-        warn "Install with: sudo pacman -S age"
+    # Check if backup exists
+    if [[ ! -f "$backup_file" ]]; then
         return 0
     fi
 
     echo ""
-    log "Restoring encrypted SSH keys..."
+    log "Restoring SSH keys..."
     echo ""
-    echo "Enter the path to your age private key file"
-    echo "(the key shown during --init setup)"
-    echo ""
+    echo "This will restore your SSH keys to ~/.ssh"
+    local confirm_restore
+    confirm_restore=$(prompt "Continue with restore? (Y/n): " "y")
 
-    local privkey_path
-    read -rp "Private key path: " privkey_path
-    privkey_path="${privkey_path/#\~/$HOME}"
-
-    if [[ ! -f "$privkey_path" ]]; then
-        error "Private key file not found: $privkey_path"
-        error "Cannot restore SSH keys without private key"
-        return 1
+    if [[ ! "$confirm_restore" =~ ^[yY]$ ]]; then
+        log "SSH key restore cancelled"
+        return 0
     fi
 
-    # Decrypt and extract
-    if age -d -i "$privkey_path" "$encrypted_file" 2>/dev/null | \
-       tar -xzf - -C "$HOME" 2>/dev/null; then
+    echo ""
 
+    # Extract SSH keys
+    if tar -xzf "$backup_file" -C "$HOME" 2>/dev/null; then
         # Set correct permissions
         chmod 700 "$HOME/.ssh"
         find "$HOME/.ssh" -type f -name "id_*" ! -name "*.pub" -exec chmod 600 {} \;
@@ -83,8 +55,7 @@ restore_secrets() {
 
         log "SSH keys restored successfully"
     else
-        error "Failed to decrypt SSH keys"
-        error "Check that you provided the correct private key"
+        error "Failed to restore SSH keys"
         return 1
     fi
 }

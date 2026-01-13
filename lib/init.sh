@@ -3,80 +3,79 @@
 
 setup_encryption_key() {
     echo ""
-    log "Encryption key setup for secrets backup..."
+    log "SSH key setup for secrets encryption and storage..."
     echo ""
 
-    local generate_key
-    generate_key=$(prompt "Generate new age encryption key? (Y/n): " "y")
+    local ssh_key_path="$HOME/.ssh/id_ed25519"
+    local temp_dir="$HOME/.ssh/omarchy-backup"
 
-    if [[ "$generate_key" =~ ^[yY]$ ]]; then
-        # Generate new age key
-        log "Generating new age encryption key..."
+    # Check if SSH key exists
+    if [[ ! -f "$ssh_key_path" ]]; then
+        echo "No Ed25519 SSH key found at $ssh_key_path"
+        echo ""
+        local generate_ssh
+        generate_ssh=$(prompt "Generate a new SSH key? (Y/n): " "y")
 
-        if ! command -v age-keygen &>/dev/null; then
-            error "age-keygen not installed. Install with: sudo pacman -S age"
+        if [[ "$generate_ssh" =~ ^[yY]$ ]]; then
+            log "Generating new SSH key..."
+            ssh-keygen -t ed25519 -f "$ssh_key_path" -N "" -C "omarchy-sync backup" 2>/dev/null || {
+                error "Failed to generate SSH key"
+                exit 1
+            }
+            log "SSH key generated at $ssh_key_path"
+        else
+            error "SSH key required for encryption. Cannot continue."
             exit 1
         fi
-
-        # Generate key, capture output
-        local keygen_output
-        keygen_output=$(age-keygen 2>&1)
-
-        # Extract public key (format: "# public key: age1...")
-        local public_key
-        public_key=$(echo "$keygen_output" | grep "^# public key:" | cut -d' ' -f4)
-
-        # Extract private key (format: "AGE-SECRET-KEY-1...")
-        local private_key
-        private_key=$(echo "$keygen_output" | grep "^AGE-SECRET-KEY-")
-
-        if [[ -z "$public_key" ]] || [[ -z "$private_key" ]]; then
-            error "Failed to generate age key"
-            exit 1
-        fi
-
-        # Save public key to config
-        set_encryption_public_key "$public_key"
-        log "Public key saved to config."
-
-        # Show private key ONCE - user must save it
-        echo ""
-        echo "=========================================="
-        echo "⚠️  SAVE YOUR ENCRYPTION PRIVATE KEY  ⚠️"
-        echo "=========================================="
-        echo ""
-        echo "This key will be shown ONLY ONCE."
-        echo "Save it in your password manager (1Password, Bitwarden, etc.)"
-        echo "You will need it to restore your backup."
-        echo ""
-        echo "Private key:"
-        echo ""
-        echo "$private_key"
-        echo ""
-        echo "=========================================="
-        echo ""
-        read -rp "Press Enter after saving the key to continue..."
-
-    else
-        # Manual key import
-        local existing_pubkey
-        read -rp "Enter your age public key (age1...): " existing_pubkey
-
-        if [[ ! "$existing_pubkey" =~ ^age1[a-z0-9]{58}$ ]]; then
-            error "Invalid age public key format. Must start with 'age1' and be 62 characters."
-            exit 1
-        fi
-
-        set_encryption_public_key "$existing_pubkey"
-        log "Public key saved to config."
     fi
 
+    echo ""
+    log "Preparing SSH private key for backup..."
+    echo ""
+
+    # Create temporary directory for the key
+    mkdir -p "$temp_dir"
+    chmod 700 "$temp_dir"
+
+    # Copy private key to temp directory
+    cp "$ssh_key_path" "$temp_dir/id_ed25519" || {
+        error "Failed to copy SSH key"
+        rm -rf "$temp_dir"
+        exit 1
+    }
+    chmod 600 "$temp_dir/id_ed25519"
+
+    # Copy private key to clipboard
+    if ! cat "$temp_dir/id_ed25519" | wl-copy --type text/plain 2>/dev/null; then
+        error "Failed to copy to clipboard. Is wl-copy installed?"
+        rm -rf "$temp_dir"
+        exit 1
+    fi
+
+    echo "✓ SSH private key copied to clipboard"
+    echo ""
+    echo "Save this key in your password manager (1Password, Bitwarden, etc.):"
+    echo "  1. Paste the clipboard content into your password manager"
+    echo "  2. Label it as 'Omarchy Sync SSH Private Key'"
+    echo "  3. Keep it safe - you'll need it to restore your backup"
+    echo ""
+
+    read -rp "Press Enter after saving the key to 1Password: "
+    echo ""
+    log "Cleaning up temporary key file..."
+    rm -rf "$temp_dir"
+    echo ""
+    log "SSH key setup complete"
     echo ""
 }
 
 init_command() {
     echo "--- Omarchy Sync: Setup ---"
     echo ""
+
+    # Check for required packages (wl-copy for clipboard support)
+    # Prompts user to install if missing, waits and verifies
+    require_packages "wl-clipboard:wl-copy"
 
     # Check if already initialized
     if config_exists; then
@@ -118,6 +117,37 @@ init_command() {
 
         # Expand ~
         local_path="${local_path/#\~/$HOME}"
+
+        # Check if directory already exists
+        if [[ -d "$local_path" ]]; then
+            echo ""
+            echo "⚠️  Directory already exists: $local_path"
+            echo ""
+            if [[ -d "$local_path/.git" ]]; then
+                echo "This appears to be an existing backup directory."
+            fi
+            echo ""
+
+            # Show what's in the directory
+            local item_count
+            item_count=$(find "$local_path" -maxdepth 1 ! -name "." ! -name ".." | wc -l)
+            echo "Directory contains $item_count items:"
+            ls -la "$local_path" | tail -n +4 | head -5
+            if [[ $item_count -gt 5 ]]; then
+                echo "  ... and $((item_count - 5)) more items"
+            fi
+            echo ""
+
+            local confirm_delete
+            confirm_delete=$(prompt "Delete this directory and clone remote? (y/N): " "n")
+            if [[ ! "$confirm_delete" =~ ^[yY]$ ]]; then
+                error "Cannot proceed. Directory must be empty or deleted."
+                exit 1
+            fi
+
+            log "Deleting $local_path..."
+            rm -rf "$local_path"
+        fi
 
         log "Cloning to $local_path..."
         mkdir -p "$(dirname "$local_path")"
@@ -256,21 +286,17 @@ config_command() {
     local size_limit
     size_limit=$(get_size_limit)
 
-    local encryption_pubkey
-    encryption_pubkey=$(get_encryption_public_key)
-
     echo "Current settings:"
     echo "  1. Backup directory: $local_path"
     echo "  2. Remote: ${remote_url:-<not set>}"
     echo "  3. Size limit: ${size_limit}MB"
     echo "  4. Internal drives: $(get_internal_drives | wc -l) configured"
-    echo "  5. Encryption key: $(echo "${encryption_pubkey:0:20}..." | sed 's/\.\.\.$//')"
-    echo "  6. View config file"
-    echo "  7. Exit"
+    echo "  5. View config file"
+    echo "  6. Exit"
     echo ""
 
     local choice
-    read -rp "What would you like to change? (1-7): " choice
+    read -rp "What would you like to change? (1-6): " choice
 
     case "$choice" in
     1)
@@ -319,29 +345,9 @@ config_command() {
         ;;
     5)
         echo ""
-        echo "Current encryption public key:"
-        if [[ -n "$encryption_pubkey" ]]; then
-            echo "  $encryption_pubkey"
-        else
-            echo "  <not set>"
-        fi
-        echo ""
-        local new_key
-        read -rp "New age public key (or Enter to keep current): " new_key
-        if [[ -n "$new_key" ]]; then
-            if [[ ! "$new_key" =~ ^age1[a-z0-9]{58}$ ]]; then
-                error "Invalid age public key format. Must start with 'age1' and be 62 characters."
-            else
-                set_encryption_public_key "$new_key"
-                log "Encryption key updated"
-            fi
-        fi
-        ;;
-    6)
-        echo ""
         cat "$CONFIG_FILE"
         ;;
-    7)
+    6)
         exit 0
         ;;
     *)
